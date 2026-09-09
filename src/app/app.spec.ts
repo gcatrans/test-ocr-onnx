@@ -22,38 +22,387 @@ describe('App', () => {
     expect(compiled.querySelector('input[type="file"]')?.getAttribute('capture')).toBeNull();
   });
 
-  it('should render empty field values by default', () => {
+  it('should render same-sized New and Existing photo-source buttons beside crop mode', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
-    const inputs = Array.from(compiled.querySelectorAll<HTMLInputElement>('.field-grid input:not([type="radio"])'));
-    expect(inputs.every((input) => input.value === '' && input.placeholder === '')).toBe(true);
+    const photoButtons = Array.from(compiled.querySelectorAll<HTMLButtonElement>('.photo-actions button'));
+
+    expect(photoButtons.map((button) => button.textContent?.trim())).toEqual(['New', 'Existing']);
+    expect(compiled.querySelector('.photo-actions > span')?.textContent?.trim()).toBe('Photo:');
+    expect(compiled.querySelector('.capture-controls')?.children).toHaveLength(1);
+    expect(compiled.querySelector('.select-control')).toBeNull();
+    expect(compiled.querySelector('.empty-preview button')).toBeNull();
+    expect(compiled.querySelector('.source-actions')).toBeNull();
   });
 
-  it('should default to an editable full-image crop and quick processing', () => {
+  it('should leave the results data area empty before analysis', () => {
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelector('.field-grid')).toBeNull();
+    expect(compiled.querySelector('.raw-text')).toBeNull();
+  });
+
+  it('should show only the detected gross and payload labels', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      rawText: { set(value: string[]): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.rawText.set(['MGW 30,480 KG', 'NET 26,000 KG']);
+    app.fields.update((fields) => ({
+      ...fields,
+      mpgmKg: { ...fields['mpgmKg'], value: '30480' },
+      payloadKg: { ...fields['payloadKg'], value: '26000' },
+    }));
+    fixture.detectChanges();
+
+    const labels = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.field-grid tbody tr'));
+    expect(labels).toHaveLength(3);
+    expect(labels[1].textContent).toContain('MGW');
+    expect(labels[1].textContent).not.toContain('MPGM');
+    expect(labels[2].textContent).toContain('NET');
+    expect(labels[2].textContent).not.toContain('PAYLOAD');
+  });
+
+  it('should group weight rows by label before unit', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      rawText: { set(value: string[]): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.rawText.set(['MGW', 'NET']);
+    app.fields.update((fields) => ({
+      ...fields,
+      mpgmKg: { ...fields['mpgmKg'], value: '30480' },
+      mpgmLb: { ...fields['mpgmLb'], value: '67200' },
+      tareKg: { ...fields['tareKg'], value: '2230' },
+      tareLb: { ...fields['tareLb'], value: '4920' },
+      payloadKg: { ...fields['payloadKg'], value: '28250' },
+      payloadLb: { ...fields['payloadLb'], value: '62280' },
+    }));
+    fixture.detectChanges();
+
+    const rows = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.field-grid tbody tr')).slice(1);
+    expect(rows.map((row) => row.querySelector('th')?.textContent?.trim())).toEqual(['MGW', '', 'TARE', '', 'NET', '']);
+    expect(rows.map((row) => row.querySelector('td:nth-child(3)')?.textContent?.trim())).toEqual(['KG', 'LB', 'KG', 'LB', 'KG', 'LB']);
+    expect(rows[1].querySelector('input')?.getAttribute('aria-label')).toBe('MGW LB');
+  });
+
+  it('should render the cubic-metre unit with a trailing non-breaking space', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      capacityCubicMeters: { ...fields['capacityCubicMeters'], value: '67.5' },
+    }));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('.capacity-row td:nth-child(3)')?.textContent).toBe('CU.M.\u00a0');
+  });
+
+  it('should display the cubic-capacity label only on the first cubic-capacity row', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      capacityCubicMeters: { ...fields['capacityCubicMeters'], value: '67.5' },
+      capacityCubicFeet: { ...fields['capacityCubicFeet'], value: '2384' },
+    }));
+    fixture.detectChanges();
+
+    const rows = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.capacity-row'));
+    expect(rows.map((row) => row.querySelector('th')?.textContent?.trim())).toEqual(['CU.CAP.', '']);
+    expect(rows[1].querySelector('input')?.getAttribute('aria-label')).toBe('CU.CAP. CU.FT.');
+  });
+
+  it('should display the capacity label only on the first liters or gallons row', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      capacityLiters: { ...fields['capacityLiters'], value: '25,000' },
+      capacityUsGallons: { ...fields['capacityUsGallons'], value: '6,600' },
+    }));
+    fixture.detectChanges();
+
+    const rows = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.capacity-row'));
+    expect(rows.map((row) => row.querySelector('th')?.textContent?.trim())).toEqual(['CAPACITY', '']);
+    expect(rows[1].querySelector('th')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('should render maximum working pressure above the container ID', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      maxWorkingPressureBar: { ...fields['maxWorkingPressureBar'], value: '10' },
+      maxWorkingPressurePsi: { ...fields['maxWorkingPressurePsi'], value: '145' },
+    }));
+    fixture.detectChanges();
+
+    const rows = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.field-grid tbody tr'));
+    expect(rows.slice(0, 3).map((row) => row.querySelector('th')?.textContent?.trim())).toEqual(['MAX WORKING PRESSURE', '', 'Container ID']);
+    expect(rows[0].querySelector('td:nth-child(3)')?.textContent).toBe('BAR');
+    expect(rows[1].querySelector('td:nth-child(3)')?.textContent).toBe('PSI');
+    expect(rows[1].querySelector('input')?.getAttribute('aria-label')).toBe('MAX WORKING PRESSURE PSI');
+  });
+
+  it('should use the UN tank gross position when its weight label is obscured', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      rawText: { set(value: string[]): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.rawText.set(['UN TANK T22', 'AXGROSS WEIGHT 4300KG/9480bs']);
+    app.fields.update((fields) => ({
+      ...fields,
+      mpgmKg: { ...fields['mpgmKg'], value: '4300' },
+      mpgmLb: { ...fields['mpgmLb'], value: '9480' },
+    }));
+    fixture.detectChanges();
+
+    const grossRow = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.field-grid tbody tr'))
+      .find((row) => row.querySelector('input')?.value === '4300');
+    expect(grossRow?.querySelector('th')?.textContent?.trim()).toBe('MAX.GR.');
+  });
+
+  it('should render validation and units separately from confidence', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+       ...fields,
+       containerId: { ...fields['containerId'], value: 'HCSU7997909', confidence: 0.95 },
+       isoCode: { ...fields['isoCode'], value: '22K2', confidence: 0.84 },
+       mpgmKg: { ...fields['mpgmKg'], value: '30480', confidence: 1 },
+       capacityCubicMeters: { ...fields['capacityCubicMeters'], value: '67.5', confidence: 0.85 },
+    }));
+    fixture.detectChanges();
+
+    const validation = (fixture.nativeElement as HTMLElement).querySelector('.container-id td:nth-child(3) span');
+    expect(validation?.textContent).toBe('✓');
+    expect(validation?.getAttribute('aria-label')).toBe('ISO 6346 check digit valid');
+    expect((fixture.nativeElement as HTMLElement).querySelector('.container-id td:nth-child(4)')?.textContent).toBe('95%');
+    expect((fixture.nativeElement as HTMLElement).querySelector('tr:nth-child(3) td.confidence')?.textContent).toBe('100%');
+    expect((fixture.nativeElement as HTMLElement).querySelector('tr:nth-child(2) td.confidence')?.classList.contains('invalid')).toBe(true);
+    expect((fixture.nativeElement as HTMLElement).querySelector('.capacity-row td.confidence')?.classList.contains('invalid')).toBe(false);
+    expect((fixture.nativeElement as HTMLElement).querySelector('.capacity-row td:nth-child(3)')?.textContent).toBe('CU.M.\u00a0');
+  });
+
+  it('should color low-confidence structured fields for images/iso-tank_front-right-oblique.jpg', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      mpgmKg: { ...fields['mpgmKg'], value: '30480', confidence: 0.80 },
+      payloadKg: { ...fields['payloadKg'], value: '26830', confidence: 0.78 },
+      capacityLiters: { ...fields['capacityLiters'], value: '25000', confidence: 0.81 },
+    }));
+    fixture.detectChanges();
+
+    const rows = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.field-grid tbody tr'));
+    expect(rows[1].querySelector('td.confidence')?.classList.contains('invalid')).toBe(true);
+    expect(rows[2].querySelector('td.confidence')?.classList.contains('invalid')).toBe(true);
+    expect(rows[3].querySelector('td.confidence')?.classList.contains('invalid')).toBe(true);
+  });
+
+  it('should render a warning icon for a partial container ID', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      containerId: { ...fields['containerId'], value: 'EUXU700756' },
+    }));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('.container-id td:nth-child(3) span')?.textContent).toBe('⚠');
+  });
+
+  it('should render an inferred check digit in red with a warning', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string; inferred?: boolean }>) => Record<string, { value: string; inferred?: boolean }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      containerId: { ...fields['containerId'], value: 'EUXU7007569', inferred: true },
+    }));
+    fixture.detectChanges();
+
+    const element = fixture.nativeElement as HTMLElement;
+    expect(element.querySelector<HTMLInputElement>('.inferred-check-digit')?.value).toBe('9');
+    expect(element.querySelector('.inferred-check-digit')?.classList.contains('inferred-check-digit')).toBe(true);
+    expect(element.querySelector('.container-id td:nth-child(3) span')?.textContent).toBe('⚠');
+    expect(element.querySelector('.container-id td:nth-child(3) span')?.getAttribute('aria-label')).toBe('ISO 6346 check digit inferred');
+  });
+
+  it('should leave the ISO code unit column empty', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      isoCode: { ...fields['isoCode'], value: '22G1' },
+    }));
+    fixture.detectChanges();
+
+    const isoRow = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.field-grid tbody tr'))
+      .find((row) => row.querySelector('th')?.textContent?.trim() === 'ISO CODE');
+    expect(isoRow?.querySelector('td:nth-child(3)')?.textContent).toBe('');
+  });
+
+  it('should show only an empty Container ID field when analysis finds no fields', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+    };
+    app.analysisSuccessful.set(true);
+    fixture.detectChanges();
+
+    const rows = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLTableRowElement>('.field-grid tbody tr'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector('th')?.textContent).toContain('Container ID');
+    expect(rows[0].querySelector('input')?.value).toBe('');
+  });
+
+  it('should display container IDs in ISO 6346 groups while storing a canonical value', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      fields: { update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void; (): Record<string, { value: string }> };
+      updateField(key: string, value: string): void;
+    };
+    app.analysisSuccessful.set(true);
+    app.fields.update((fields) => ({
+      ...fields,
+      containerId: { ...fields['containerId'], value: 'HCSU7997909' },
+    }));
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>('.container-id input')?.value).toBe('HCSU 799790 9');
+
+    app.updateField('containerId', 'HCSU 799790 9');
+    expect(app.fields()['containerId'].value).toBe('HCSU7997909');
+  });
+
+  it('should default to an editable full-image crop', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
       cropDraft: () => { x: number; y: number; width: number; height: number };
-      processingMode: () => string;
     };
 
     expect(app.cropDraft()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
-    expect(app.processingMode()).toBe('full-photo');
   });
 
-  it('should default to manual crop and render both capture mode choices', () => {
+  it('should default to automatic crop mode and hide image controls before photo selection', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
       captureMode: () => string;
     };
-    fixture.detectChanges();
+    expect(app.captureMode()).toBe('auto-crop');
+    expect((fixture.nativeElement as HTMLElement).querySelectorAll('.select-control')).toHaveLength(0);
+  });
 
-    const radios = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLInputElement>('input[name="capture-mode"]'));
+  it('should show Photo and Crop controls after selecting an image', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      useImage(image: Blob, name: string): void;
+    };
+    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:photo'), revokeObjectURL: vi.fn() });
 
-    expect(app.captureMode()).toBe('manual-crop');
-    expect(radios.map((radio) => radio.value)).toEqual(['manual-crop', 'auto-crop']);
-    expect(radios[0].checked).toBe(true);
+    try {
+      app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
+      fixture.detectChanges();
+
+      const controls = Array.from((fixture.nativeElement as HTMLElement).querySelector('.capture-controls')!.children);
+      expect(controls.map((control) => control.className)).toEqual(['photo-actions', 'select-control']);
+      expect((controls[1].querySelector('select') as HTMLSelectElement).value).toBe('auto-crop');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should launch automatic crop when an image is selected in the default mode', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      useImage(image: Blob, name: string): void;
+      prepareInitialCrop: ReturnType<typeof vi.fn>;
+    };
+    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:photo'), revokeObjectURL: vi.fn() });
+    app.prepareInitialCrop = vi.fn().mockResolvedValue(undefined);
+
+    try {
+      app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
+      await fixture.whenStable();
+
+      expect(app.prepareInitialCrop).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should block photo, crop, unwarp, and scan actions during auto-crop', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      useImage(image: Blob, name: string): void;
+      processing: { set(value: boolean): void };
+    };
+    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:photo'), revokeObjectURL: vi.fn() });
+
+    try {
+      app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
+      app.processing.set(true);
+      fixture.detectChanges();
+
+      const compiled = fixture.nativeElement as HTMLElement;
+      expect(Array.from(compiled.querySelectorAll<HTMLButtonElement>('.photo-actions button')).every((button) => button.disabled)).toBe(true);
+      expect(Array.from(compiled.querySelectorAll<HTMLSelectElement>('.select-control select')).every((select) => select.disabled)).toBe(true);
+      expect(compiled.querySelector<HTMLButtonElement>('.run-button')?.disabled).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('should not start automatic OCR when a manual-crop image is selected', () => {
@@ -77,11 +426,165 @@ describe('App', () => {
     }
   });
 
+  it('should wait for the loaded preview before preparing an automatic crop', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    const preview = { naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement;
+    let resolvePreview!: (image: HTMLImageElement) => void;
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockReturnValue(new Promise<HTMLImageElement>((resolve) => {
+      resolvePreview = resolve;
+    }));
+    app.scanAutoCrop = vi.fn().mockResolvedValue([]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue(null);
+
+    const preparation = app.prepareInitialCrop(new Blob(['image'], { type: 'image/jpeg' }), 1);
+    expect(app.scanAutoCrop).not.toHaveBeenCalled();
+
+    resolvePreview(preview);
+    await preparation;
+
+    expect(app.scanAutoCrop).toHaveBeenCalledWith(preview, 4_000_000);
+  });
+
+  it('should retry automatic OCR with a smaller image when the normal pass fails', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    const preview = { naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement;
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue(preview);
+    app.scanAutoCrop = vi.fn()
+      .mockRejectedValueOnce(new Error('generated PNG could not be loaded'))
+      .mockResolvedValueOnce([]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue(null);
+
+    await app.prepareInitialCrop(new Blob(['image'], { type: 'image/jpeg' }), 1);
+
+    expect(app.scanAutoCrop).toHaveBeenNthCalledWith(1, preview, 4_000_000);
+    expect(app.scanAutoCrop).toHaveBeenNthCalledWith(2, preview, 1_000_000);
+  });
+
+  it('should create an automatic pass from the loaded preview instead of decoding the source blob', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      createCropPassFromSource: ReturnType<typeof vi.fn>;
+      detectWithTimeout: ReturnType<typeof vi.fn>;
+      scanAutoCrop(source: HTMLImageElement, maximumPixels: number): Promise<Array<{ text: string }>>;
+    };
+    const preview = { naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement;
+    const revokeObjectUrl = vi.fn();
+    vi.stubGlobal('URL', { revokeObjectURL: revokeObjectUrl });
+    app.createCropPassFromSource = vi.fn().mockResolvedValue({ url: 'blob:auto-crop', offsetX: 0, offsetY: 0, scale: 0.5, revokeUrl: true });
+    app.detectWithTimeout = vi.fn().mockResolvedValue([{ text: 'HCSU 799790 9', mean: 0.99, box: [[10, 10]] }]);
+
+    try {
+      await app.scanAutoCrop(preview, 4_000_000);
+
+      expect(app.createCropPassFromSource).toHaveBeenCalledWith(preview, 1920, 1080, { x: 0, y: 0, width: 1, height: 1 }, 1, undefined, 4_000_000);
+      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:auto-crop');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should retain cylindrical unwarping state for the selected region', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      unwarpSelectedRegion: () => boolean;
+      setUnwarpSelectedRegion(enabled: boolean): void;
+      unwarpRotation: () => number;
+      setUnwarpRotation(degrees: number): void;
+      captureMode: { set(value: string): void };
+      useImage(image: Blob, name: string): void;
+    };
+    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:photo'), revokeObjectURL: vi.fn() });
+
+    try {
+      app.captureMode.set('manual-crop');
+      app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
+      app.setUnwarpSelectedRegion(true);
+      app.setUnwarpRotation(3.5);
+      fixture.detectChanges();
+
+      expect(app.unwarpSelectedRegion()).toBe(true);
+      expect(app.unwarpRotation()).toBe(3.5);
+      expect((fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>('.rotation-control input')?.value).toBe('3.5');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should release each manual OCR pass before creating the next one', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
+      createCropPass: ReturnType<typeof vi.fn>;
+      detectWithRecovery: ReturnType<typeof vi.fn>;
+      scanOcrPasses(image: Blob, recovery: { retried: boolean }): Promise<unknown>;
+    };
+    const events: string[] = [];
+    const revokeObjectUrl = vi.fn((url: string) => events.push(`revoke:${url}`));
+    vi.stubGlobal('URL', { revokeObjectURL: revokeObjectUrl });
+    app.cropRect.set({ x: 0.1, y: 0.1, width: 0.8, height: 0.8 });
+    app.createCropPass = vi.fn()
+      .mockImplementationOnce(async () => {
+        events.push('create:first');
+        return { url: 'blob:first', offsetX: 0, offsetY: 0, scale: 1, revokeUrl: true };
+      })
+      .mockImplementationOnce(async () => {
+        events.push('create:second');
+        return { url: 'blob:second', offsetX: 0, offsetY: 0, scale: 1.4, revokeUrl: true };
+      });
+    app.detectWithRecovery = vi.fn().mockResolvedValue([{ text: 'TARE 3.650 KG', mean: 0.8 }]);
+
+    try {
+      await app.scanOcrPasses(new Blob(['large-image'], { type: 'image/jpeg' }), { retried: false });
+
+      expect(events.indexOf('revoke:blob:first')).toBeLessThan(events.indexOf('create:second'));
+      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:first');
+      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:second');
+      expect(app.createCropPass).toHaveBeenNthCalledWith(1, expect.anything(), expect.anything(), 1, undefined, 4_000_000, false, 0, 0);
+    expect(app.createCropPass).toHaveBeenNthCalledWith(2, expect.anything(), { x: 0.1, y: 0.1, width: 0.8, height: 0.8 }, 2, undefined, 4_000_000, false, 0, 0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should skip the selected-region enlargement when all extracted fields meet the confidence threshold', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      cropRect: { set(value: { x: number; y: number; width: number; height: number }): void };
+      createCropPass: ReturnType<typeof vi.fn>;
+      detectWithRecovery: ReturnType<typeof vi.fn>;
+      scanOcrPasses(image: Blob, recovery: { retried: boolean }): Promise<unknown>;
+    };
+    app.cropRect.set({ x: 0.1, y: 0.1, width: 0.8, height: 0.8 });
+    app.createCropPass = vi.fn().mockResolvedValue({ url: 'blob:first', offsetX: 0, offsetY: 0, scale: 1, revokeUrl: false });
+    app.detectWithRecovery = vi.fn().mockResolvedValue([{ text: 'HCSU 799790 9', mean: 0.9 }]);
+
+    await app.scanOcrPasses(new Blob(['image'], { type: 'image/jpeg' }), { retried: false });
+
+    expect(app.createCropPass).toHaveBeenCalledTimes(1);
+  });
+
   it('should retry a failed image preview with fresh object URLs', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
       previewUrl: () => string | null;
       diagnostics: () => Array<{ stage: string }>;
+      captureMode: { set(value: string): void };
       useImage(image: Blob, name: string): void;
       retryPreview(failedUrl: string): void;
     };
@@ -93,6 +596,7 @@ describe('App', () => {
     vi.stubGlobal('URL', { createObjectURL: createObjectUrl, revokeObjectURL: revokeObjectUrl });
 
     try {
+      app.captureMode.set('manual-crop');
       app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
       app.retryPreview('blob:preview-1');
       app.retryPreview('blob:preview-2');
@@ -114,25 +618,40 @@ describe('App', () => {
       fields: { set(value: Record<string, { value: string }>): void; (): Record<string, { value: string }> };
       rawText: { set(value: string[]): void; (): string[] };
       rawScans: { set(value: Array<{ label: string; lines: Array<{ text: string; confidence: number }> }>): void; (): Array<{ label: string; lines: Array<{ text: string; confidence: number }> }> };
+      captureMode: { set(value: string): void; (): string };
       openFilePicker(): void;
     };
     app.fields.set({ containerId: { value: 'HCSU7997909' } });
     app.rawText.set(['HCSU 799790 9 (98%)']);
     app.rawScans.set([{ label: 'Full photo', lines: [{ text: 'HCSU 799790 9', confidence: 98 }] }]);
+    app.captureMode.set('auto-crop');
 
     app.openFilePicker();
 
     expect(app.fields()['containerId'].value).toBe('');
     expect(app.rawText()).toEqual([]);
     expect(app.rawScans()).toEqual([]);
+
+    const fixtureWithImage = TestBed.createComponent(App);
+    const appWithImage = fixtureWithImage.componentInstance as unknown as {
+      captureMode: { set(value: string): void; (): string };
+      useImage(image: Blob, name: string): void;
+    };
+    appWithImage.captureMode.set('auto-crop');
+    appWithImage.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
+    expect(appWithImage.captureMode()).toBe('auto-crop');
   });
 
   it('should enable saving once an image is selected', () => {
     const fixture = TestBed.createComponent(App);
-    const app = fixture.componentInstance as unknown as { useImage(image: Blob, name: string): void };
+    const app = fixture.componentInstance as unknown as {
+      captureMode: { set(value: string): void };
+      useImage(image: Blob, name: string): void;
+    };
     vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:selected-image'), revokeObjectURL: vi.fn() });
 
     try {
+      app.captureMode.set('manual-crop');
       app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
       fixture.detectChanges();
 
@@ -142,18 +661,18 @@ describe('App', () => {
     }
   });
 
-  it('should create a display URL for a saved photo', () => {
+  it('should create a display URL for a saved thumbnail', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      hydrateSavedRecord(record: { id: string; savedAt: string; payload: unknown; image: Blob }): { imageUrl: string | null };
+      hydrateSavedRecord(record: { id: string; savedAt: string; payload: unknown; thumbnail: Blob }): { thumbnailUrl: string | null };
     };
-    const createObjectUrl = vi.fn().mockReturnValue('blob:saved-photo');
+    const createObjectUrl = vi.fn().mockReturnValue('blob:saved-thumbnail');
     vi.stubGlobal('URL', { createObjectURL: createObjectUrl });
 
     try {
-      const record = app.hydrateSavedRecord({ id: 'record-1', savedAt: '2026-08-15T08:00:00.000Z', payload: {}, image: new Blob(['image'], { type: 'image/jpeg' }) });
+      const record = app.hydrateSavedRecord({ id: 'record-1', savedAt: '2026-08-15T08:00:00.000Z', payload: {}, thumbnail: new Blob(['image'], { type: 'image/jpeg' }) });
 
-      expect(record.imageUrl).toBe('blob:saved-photo');
+      expect(record.thumbnailUrl).toBe('blob:saved-thumbnail');
       expect(createObjectUrl).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
@@ -163,51 +682,174 @@ describe('App', () => {
   it('should render saved records with JSON and delete controls', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      savedRecords: { set(records: Array<{ id: string; savedAt: string; payload: unknown; imageUrl: string | null }>): void };
+      savedRecords: { set(records: Array<{ id: string; savedAt: string; payload: unknown; thumbnailUrl: string | null; hasImage: boolean }>): void };
     };
-    app.savedRecords.set([{ id: 'record-1', savedAt: '2026-08-15T08:00:00.000Z', payload: { source: { fileName: 'container.jpg' } }, imageUrl: 'blob:saved-photo' }]);
+    app.savedRecords.set([{ id: 'record-1', savedAt: '2026-08-15T08:00:00.000Z', payload: { source: { fileName: 'container.jpg' } }, thumbnailUrl: 'blob:saved-thumbnail', hasImage: true }]);
     fixture.detectChanges();
 
     const savedResults = (fixture.nativeElement as HTMLElement).querySelector('.saved-results')!;
     expect(savedResults.textContent).toContain('container.jpg');
+    expect(savedResults.textContent).toContain('View photo');
     expect(savedResults.textContent).toContain('View JSON');
     expect(savedResults.textContent).toContain('Delete');
+    expect(savedResults.querySelector<HTMLButtonElement>('.delete-all-button')?.disabled).toBe(false);
+    expect(savedResults.querySelector<HTMLButtonElement>('.saved-record-list button')?.disabled).toBe(false);
+  });
+
+  it('should disable viewing a photo when only saved metadata is available', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      savedRecords: { set(records: Array<{ id: string; savedAt: string; payload: unknown; thumbnailUrl: string | null; hasImage: boolean }>): void };
+    };
+    app.savedRecords.set([{ id: 'record-1', savedAt: '2026-08-15T08:00:00.000Z', payload: {}, thumbnailUrl: null, hasImage: false }]);
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('.saved-record-list button')?.disabled).toBe(true);
+  });
+
+  it('should revoke the displayed full-photo URL when closing it', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      savedPhoto: { set(value: { id: string; name: string; url: string } | null): void; (): { id: string; name: string; url: string } | null };
+      closeSavedPhoto(): void;
+    };
+    const revokeObjectUrl = vi.fn();
+    vi.stubGlobal('URL', { revokeObjectURL: revokeObjectUrl });
+
+    try {
+      app.savedPhoto.set({ id: 'record-1', name: 'container.jpg', url: 'blob:full-photo' });
+      app.closeSavedPhoto();
+
+      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:full-photo');
+      expect(app.savedPhoto()).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('should disable deleting all saved results when none exist', () => {
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('.delete-all-button')?.disabled).toBe(true);
   });
 
   it('should render raw text grouped by OCR scan', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      rawScans: { set(value: Array<{ label: string; lines: Array<{ text: string; confidence: number }>; durationMs: number }>): void };
+      analysisSuccessful: { set(value: boolean): void };
+      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
+       rawScans: { set(value: Array<{ label: string; lines: Array<{ text: string; confidence: number }>; durationMs: number; pixelCount: number }>): void };
     };
+    app.analysisSuccessful.set(true);
+    app.cropRect.set({ x: 0.2, y: 0.3, width: 0.4, height: 0.2 });
     app.rawScans.set([
-      { label: 'Selected region', lines: [{ text: 'HCSU 799790 9', confidence: 98 }], durationMs: 320 },
-      { label: 'Selected region (2x)', lines: [{ text: 'TARE 3,650 KG', confidence: 94 }], durationMs: 480 },
+       { label: 'Original size', lines: [{ text: 'HCSU 799790 9', confidence: 98 }], durationMs: 320, pixelCount: 1_440_000 },
+       { label: '1.4x enlarged', lines: [{ text: 'TARE 3,650 KG', confidence: 94 }], durationMs: 480, pixelCount: 2_822_400 },
+       { label: '3x container ID check digit', lines: [{ text: '9', confidence: 86 }], durationMs: 520, pixelCount: 64_800 },
     ]);
     fixture.detectChanges();
 
     const panel = (fixture.nativeElement as HTMLElement).querySelector('.raw-text')!;
-    expect(panel.textContent).toContain('Selected region');
-    expect(panel.textContent).toContain('320 ms');
-    expect(panel.textContent).toContain('480 ms');
-    expect(panel.querySelectorAll('tbody tr')).toHaveLength(2);
+    expect(panel.textContent).toContain('RAW DETECTED TEXT FOR SELECTED REGION');
+    expect(panel.textContent).toContain('Original size');
+    expect(panel.textContent).toContain('1.4x enlarged');
+     expect(panel.textContent).toContain('320 ms');
+     expect(panel.textContent).toContain('480 ms');
+     expect(panel.textContent).toContain('1.44 MP');
+     expect(panel.textContent).toContain('2.82 MP');
+     expect(panel.textContent).toContain('64.8 kpx');
+    expect(panel.querySelectorAll('tbody tr')).toHaveLength(3);
+    expect(panel.querySelectorAll('.raw-scans > section')).toHaveLength(3);
     expect(panel.textContent).toContain('98%');
     expect(panel.textContent).not.toContain('(98%)');
+    expect(panel.querySelector('thead th:last-child')?.textContent).toBe('Confidence');
+    expect(panel.querySelectorAll('tbody td:last-child')).toHaveLength(3);
   });
 
-  it('should process the selected crop only after it is prepared', async () => {
+  it('should replace the previous crop before processing', async () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      applyCrop(): Promise<boolean>;
-      processImage(): Promise<void>;
+      cropDraft: { set(value: { x: number; y: number; width: number; height: number }): void };
+      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void; (): { x: number; y: number; width: number; height: number } | null };
+      processImage: ReturnType<typeof vi.fn>;
       applyCropAndProcess(): Promise<void>;
     };
-    app.applyCrop = vi.fn().mockResolvedValue(true);
+    const crop = { x: 0.2, y: 0.3, width: 0.4, height: 0.2 };
+    app.cropDraft.set(crop);
+    app.cropRect.set({ x: 0, y: 0, width: 1, height: 1 });
     app.processImage = vi.fn().mockResolvedValue(undefined);
 
     await app.applyCropAndProcess();
 
-    expect(app.applyCrop).toHaveBeenCalled();
+    expect(app.cropRect()).toEqual(crop);
     expect(app.processImage).toHaveBeenCalled();
+  });
+
+  it('should render Scan selected crop region and Save on this device first in the results panel', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+    };
+    fixture.detectChanges();
+
+    const results = (fixture.nativeElement as HTMLElement).querySelector('.results')!;
+    const buttons = Array.from(results.querySelectorAll<HTMLButtonElement>(':scope > .result-actions button'));
+
+    expect(results.firstElementChild?.classList.contains('result-actions')).toBe(true);
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual(['Scan selected crop region']);
+
+    app.analysisSuccessful.set(true);
+    fixture.detectChanges();
+
+    expect(Array.from(results.querySelectorAll<HTMLButtonElement>(':scope > .result-actions button')).map((button) => button.textContent?.trim())).toEqual(['Scan selected crop region', 'Save on this device']);
+  });
+
+  it('should not show a manual targeted check-digit action', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
+      previewUrl: { set(value: string | null): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.cropRect.set({ x: 0, y: 0, width: 1, height: 1 });
+    app.previewUrl.set('blob:image');
+    fixture.detectChanges();
+
+    const buttons = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('.result-actions button'));
+    expect(buttons.map((button) => button.textContent?.trim())).toEqual([
+      'Scan selected crop region',
+      'Save on this device',
+    ]);
+  });
+
+  it('should lock the visible crop while OCR is processing and unlock it afterwards', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      previewUrl: { set(value: string | null): void };
+      cropDraft: { set(value: { x: number; y: number; width: number; height: number }): void };
+      processing: { set(value: boolean): void };
+      applyingCrop: { set(value: boolean): void };
+    };
+    app.previewUrl.set('blob:container-image');
+    app.cropDraft.set({ x: 0.2, y: 0.3, width: 0.4, height: 0.2 });
+    app.processing.set(true);
+    fixture.detectChanges();
+
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelector('.crop-canvas.locked')).not.toBeNull();
+    expect(compiled.querySelector('.crop-selection')).not.toBeNull();
+    expect(compiled.querySelector<HTMLButtonElement>('.run-button')?.disabled).toBe(true);
+    expect(Array.from(compiled.querySelectorAll<HTMLButtonElement>('.crop-handle')).every((handle) => handle.disabled)).toBe(true);
+
+    app.processing.set(false);
+    app.applyingCrop.set(false);
+    fixture.detectChanges();
+
+    expect(compiled.querySelector('.crop-canvas.locked')).toBeNull();
+    expect(compiled.querySelector<HTMLButtonElement>('.run-button')?.disabled).toBe(false);
+    expect(Array.from(compiled.querySelectorAll<HTMLButtonElement>('.crop-handle')).every((handle) => !handle.disabled)).toBe(true);
   });
 
   it('should attach the camera stream after the video preview is rendered', async () => {
@@ -268,58 +910,18 @@ describe('App', () => {
     expect(app.createJsonPayload().source.manualCrop).toEqual(crop);
   });
 
-  it('should keep the crop unselected when preview creation fails', async () => {
+  it('should retry local OCR once after a failed detection without recreating it', async () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      cropDraft: { set(value: { x: number; y: number; width: number; height: number }): void };
-      cropRect: () => { x: number; y: number; width: number; height: number } | null;
-      diagnostics: () => Array<{ stage: string; message: string }>;
-      updateCropPreview(crop: { x: number; y: number; width: number; height: number }): Promise<void>;
-      applyCrop(): Promise<void>;
-    };
-    app.cropDraft.set({ x: 0.2, y: 0.2, width: 0.3, height: 0.3 });
-    app.updateCropPreview = () => Promise.reject(new Error('Canvas unavailable'));
-
-    await app.applyCrop();
-
-    expect(app.cropRect()).toBeNull();
-    expect(app.diagnostics().some((diagnostic) => diagnostic.stage === 'Manual crop' && diagnostic.message === 'The selected region could not be prepared. Adjust the rectangle or choose the image again.')).toBe(true);
-  });
-
-  it('should regenerate a failed selected-crop preview', async () => {
-    const fixture = TestBed.createComponent(App);
-    const app = fixture.componentInstance as unknown as {
-      cropRect: { set(value: { x: number; y: number; width: number; height: number }): void };
-      cropPreviewUrl: { set(value: string | null): void; (): string | null };
-      updateCropPreview: ReturnType<typeof vi.fn>;
-      retryCropPreview(url: string): Promise<void>;
-    };
-    const crop = { x: 0.2, y: 0.2, width: 0.3, height: 0.3 };
-    app.cropRect.set(crop);
-    app.cropPreviewUrl.set('blob:failed-crop');
-    app.updateCropPreview = vi.fn().mockImplementation(async () => app.cropPreviewUrl.set('blob:replacement-crop'));
-
-    await app.retryCropPreview('blob:failed-crop');
-
-    expect(app.updateCropPreview).toHaveBeenCalledWith(crop);
-    expect(app.cropPreviewUrl()).toBe('blob:replacement-crop');
-  });
-
-  it('should recreate local OCR once after a failed detection', async () => {
-    const fixture = TestBed.createComponent(App);
-    const app = fixture.componentInstance as unknown as {
-      getOcr: ReturnType<typeof vi.fn>;
+      detectWithTimeout: ReturnType<typeof vi.fn>;
       detectWithRecovery(url: string, recovery: { retried: boolean }): Promise<string[]>;
     };
-    const firstOcr = { detect: vi.fn().mockRejectedValue(new Error('stalled worker')) };
-    const replacementOcr = { detect: vi.fn().mockResolvedValue(['container text']) };
-    app.getOcr = vi.fn().mockResolvedValueOnce(firstOcr).mockResolvedValueOnce(replacementOcr);
+    app.detectWithTimeout = vi.fn().mockRejectedValueOnce(new Error('stalled worker')).mockResolvedValueOnce(['container text']);
 
     await expect(app.detectWithRecovery('blob:crop', { retried: false })).resolves.toEqual(['container text']);
 
-    expect(firstOcr.detect).toHaveBeenCalledWith('blob:crop');
-    expect(replacementOcr.detect).toHaveBeenCalledWith('blob:crop');
-    expect(app.getOcr).toHaveBeenCalledTimes(2);
+    expect(app.detectWithTimeout).toHaveBeenCalledWith('blob:crop');
+    expect(app.detectWithTimeout).toHaveBeenCalledTimes(2);
   });
 
   it('should use a loaded image element when bitmap and image decode fail', async () => {
@@ -403,26 +1005,84 @@ describe('App', () => {
 
     expect(app.cropOutputScale(4_000, 3_000, 1, undefined, 4_000_000)).toBeCloseTo(Math.sqrt(1 / 3));
     expect(app.cropOutputScale(2_000, 1_000, 2, undefined, 4_000_000)).toBeCloseTo(Math.sqrt(2));
+    const originalScale = app.cropOutputScale(4_032, 3_024, 1, undefined, 4_000_000);
+    const retryScale = app.cropOutputScale(4_032, 3_024, 2, undefined, 4_000_000);
+    expect(retryScale).toBeGreaterThanOrEqual(originalScale);
   });
 
-  it('should release every temporary OCR pass when pass preparation fails', () => {
+  it('should display the retained unwarped crop above selected-region raw text', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      releaseOcrPasses(passes: Array<{ url: string; revokeUrl: boolean }>): void;
+      unwarpedCropUrl: { set(value: string | null): void };
+      unwarpSelectedRegion: { set(value: boolean): void };
+      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
+      analysisSuccessful: { set(value: boolean): void };
     };
-    const revokeObjectUrl = vi.fn();
-    vi.stubGlobal('URL', { revokeObjectURL: revokeObjectUrl });
+    app.cropRect.set({ x: 0.1, y: 0.2, width: 0.7, height: 0.3 });
+    app.analysisSuccessful.set(true);
+    app.unwarpSelectedRegion.set(true);
+    app.unwarpedCropUrl.set('blob:unwarped');
+    fixture.detectChanges();
+
+    const results = (fixture.nativeElement as HTMLElement).querySelector('.results')!;
+    const preview = results.querySelector<HTMLImageElement>('.unwarped-preview img');
+    expect(preview?.src).toContain('blob:unwarped');
+    expect(preview?.alt).toBe('Unwarped selected crop used for OCR');
+    expect(results.querySelector('.unwarped-preview')!.compareDocumentPosition(results.querySelector('.raw-text')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('should display the targeted check-digit preview above raw text', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      analysisSuccessful: { set(value: boolean): void };
+      checkDigitPreviewUrl: { set(value: string | null): void };
+    };
+    app.analysisSuccessful.set(true);
+    app.checkDigitPreviewUrl.set('blob:check-digit');
+    fixture.detectChanges();
+
+    const results = (fixture.nativeElement as HTMLElement).querySelector('.results')!;
+    expect(results.querySelector<HTMLImageElement>('.unwarped-preview img')?.src).toContain('blob:check-digit');
+    expect(results.querySelector('.unwarped-preview')!.textContent).toContain('Targeted check-digit region');
+    expect(results.querySelector('.unwarped-preview')!.compareDocumentPosition(results.querySelector('.raw-text')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('should identify browser memory failures while processing OCR', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      ocrFailureMessage(error: unknown): string;
+    };
+
+    expect(app.ocrFailureMessage(new RangeError('Canvas allocation failed'))).toContain('ran out of memory');
+  });
+
+  it('should reduce the crop pixel budget when available heap is low', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      runtimeCropPixelBudget(configuredMaximumPixels?: number): number | undefined;
+    };
+
+    vi.stubGlobal('performance', {
+      memory: { usedJSHeapSize: 192_000_000, jsHeapSizeLimit: 256_000_000 },
+    });
 
     try {
-      app.releaseOcrPasses([
-        { url: 'blob:first', revokeUrl: true },
-        { url: 'blob:source', revokeUrl: false },
-        { url: 'blob:second', revokeUrl: true },
-      ]);
+      expect(app.runtimeCropPixelBudget(2_000_000)).toBe(1_000_000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
-      expect(revokeObjectUrl).toHaveBeenCalledTimes(2);
-      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:first');
-      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:second');
+  it('should retain the configured crop pixel budget when heap data is unavailable', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      runtimeCropPixelBudget(configuredMaximumPixels?: number): number | undefined;
+    };
+
+    vi.stubGlobal('performance', {});
+
+    try {
+      expect(app.runtimeCropPixelBudget(2_000_000)).toBe(2_000_000);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -512,6 +1172,160 @@ describe('App', () => {
 
     expect(fields['payloadKg'].value).toBe('32.350');
     expect(fields['capacityLiters'].value).toBe('25,000');
+  });
+
+  it('should extract UN TANK fields from marking patterns and export them', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string }>;
+      fields: { set(value: Record<string, { value: string; unit?: string; confidence?: number }>): void };
+      createJsonPayload(): { container: { unTank: Record<string, { value: string }> } };
+    };
+
+    const fields = app.extractFields([
+      { text: '22 A1 RID-ADR-IMDG', mean: 0.99 },
+      { text: 'UN TANK T11', mean: 0.98 },
+      { text: 'UNRELATED 123 KG', mean: 0.99 },
+      { text: '30,480 KG / 67,200 LB', mean: 0.97 },
+      { text: 'UNRELATED LINE', mean: 0.99 },
+      { text: '2,100 KG / 4,630 LB', mean: 0.96 },
+      { text: 'UNRELATED CAPACITY 10 L', mean: 0.99 },
+      { text: '33,200 L / 8,770 US GAL', mean: 0.95 },
+      { text: '33', mean: 0.94 },
+      { text: 'UN 1203', mean: 0.93 },
+    ]);
+
+    expect(fields['isoCode'].value).toBe('');
+    expect(fields['approvalCode'].value).toBe('22A1');
+    expect(fields['applicableRegulations'].value).toBe('RID-ADR-IMDG');
+    expect(fields['tankCode'].value).toBe('T11');
+    expect(fields['mpgmKg'].value).toBe('30,480');
+    expect(fields['mpgmLb'].value).toBe('67,200');
+    expect(fields['tareKg'].value).toBe('2,100');
+    expect(fields['tareLb'].value).toBe('4,630');
+    expect(fields['capacityLiters'].value).toBe('33,200');
+    expect(fields['capacityUsGallons'].value).toBe('8,770');
+    expect(fields['kemlerCode'].value).toBe('33');
+    expect(fields['unNumber'].value).toBe('1203');
+
+    app.fields.set(fields);
+    const exported = app.createJsonPayload();
+    expect(Object.fromEntries(Object.entries(exported.container.unTank).map(([key, field]) => [key, field.value]))).toEqual({
+      approvalCode: '22A1',
+      applicableRegulations: 'RID-ADR-IMDG',
+      tankCode: 'T11',
+      kemlerCode: '33',
+      unNumber: '1203',
+    });
+  });
+
+  it('should ignore UN TANK slash pairs without the required KG and letter units', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string; inferred?: boolean }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'UN TANK T11 22A1 Applicable Regulations', mean: 0.99 },
+      { text: '30,480 KG / 67,200', mean: 0.98 },
+      { text: '2,100 / 4,630 LBS', mean: 0.97 },
+      { text: '33,200 L / 8,770 US GAL', mean: 0.96 },
+      { text: '33', mean: 0.95 },
+      { text: '1203', mean: 0.94 },
+    ]);
+
+    expect(fields['mpgmKg'].value).toBe('');
+    expect(fields['mpgmLb'].value).toBe('');
+    expect(fields['tareKg'].value).toBe('');
+    expect(fields['tareLb'].value).toBe('');
+
+    const bothMissing = app.extractFields([
+      { text: 'UN TANK T11 22A1 Applicable Regulations', mean: 0.99 },
+      { text: '30,480 / 67,200', mean: 0.98 },
+      { text: '2,100 / 4,630', mean: 0.97 },
+    ]);
+    expect(bothMissing['mpgmKg'].value).toBe('');
+    expect(bothMissing['mpgmLb'].value).toBe('');
+    expect(bothMissing['tareKg'].value).toBe('');
+    expect(bothMissing['tareLb'].value).toBe('');
+  });
+
+  it('should associate UN TANK codes after a capacity split across OCR lines', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'UN TANK T22', mean: 0.99 },
+      { text: '4300 KG / 9480 LBS', mean: 0.98 },
+      { text: '773 KG / 1704 LBS', mean: 0.97 },
+      { text: '86 1105 L', mean: 0.96 },
+      { text: '292 US GAL', mean: 0.95 },
+      { text: '368', mean: 0.94 },
+      { text: 'UN 3286', mean: 0.93 },
+    ]);
+
+    expect(fields['capacityLiters'].value).toBe('1105');
+    expect(fields['capacityUsGallons'].value).toBe('292');
+    expect(fields['kemlerCode'].value).toBe('368');
+    expect(fields['unNumber'].value).toBe('3286');
+  });
+
+  it('should fully extract images/iso-tank_frontal.jpg markings', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number; box?: number[][] }>): Record<string, { value: string }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'LASU 2100400', mean: 0.99, box: [[400, 100], [680, 100], [680, 140], [400, 140]] },
+      { text: '22K2', mean: 0.98, box: [[490, 150], [590, 150], [590, 190], [490, 190]] },
+      { text: 'MPGM', mean: 0.97, box: [[470, 620], [540, 620], [540, 650], [470, 650]] },
+      { text: '36000KG', mean: 0.96, box: [[550, 620], [680, 620], [680, 650], [550, 650]] },
+      { text: '79365LB', mean: 0.95, box: [[550, 655], [680, 655], [680, 685], [550, 685]] },
+      { text: 'TARE', mean: 0.97, box: [[470, 690], [540, 690], [540, 720], [470, 720]] },
+      { text: '3650KG', mean: 0.96, box: [[550, 690], [680, 690], [680, 720], [550, 720]] },
+      { text: '8047LB', mean: 0.95, box: [[550, 725], [680, 725], [680, 755], [550, 755]] },
+    ]);
+
+    expect(fields['containerId'].value).toBe('LASU2100400');
+    expect(fields['isoCode'].value).toBe('22K2');
+    expect(fields['mpgmKg'].value).toBe('36000');
+    expect(fields['mpgmLb'].value).toBe('79365');
+    expect(fields['tareKg'].value).toBe('3650');
+    expect(fields['tareLb'].value).toBe('8047');
+    expect(fields['payloadKg'].value).toBe('');
+    expect(fields['payloadLb'].value).toBe('');
+  });
+
+  it('should recover the boxed check digit from images/iso-tank_frontal.jpg', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number; box?: number[][] }>): Record<string, { value: string }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'LASU 210040', mean: 0.99, box: [[400, 100], [650, 100], [650, 140], [400, 140]] },
+      { text: '0', mean: 0.98, box: [[665, 102], [685, 102], [685, 138], [665, 138]] },
+    ]);
+
+    expect(fields['containerId'].value).toBe('LASU2100400');
+  });
+
+  it('should detect unlabeled liter and US gallon capacities', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string }>;
+    };
+
+    const fields = app.extractFields([
+      { text: '25,000 L', mean: 0.94 },
+      { text: '6,600 US Gal', mean: 0.96 },
+    ]);
+
+    expect(fields['capacityLiters'].value).toBe('25,000');
+    expect(fields['capacityUsGallons'].value).toBe('6,600');
   });
 
   it('should extract a payload when OCR joins its misspelled label to the value', () => {
@@ -617,6 +1431,90 @@ describe('App', () => {
     expect(fields['capacityCubicFeet'].value).toBe('162');
   });
 
+  it('should extract maximum working pressure in bar and psi', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string; confidence?: number }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'MAX WORKING PRESSURE 10 BAR/145 PSI', mean: 0.96 },
+    ]);
+
+    expect(fields['maxWorkingPressureBar'].value).toBe('10');
+    expect(fields['maxWorkingPressurePsi'].value).toBe('145');
+    expect(fields['maxWorkingPressureBar'].confidence).toBe(0.96);
+    expect(fields['maxWorkingPressurePsi'].confidence).toBe(0.96);
+  });
+
+  it('should keep gross pounds attached to the gross row when OCR confuses the L in LBS', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'MAXGROSSWEIGHT:4300KG/9480lbs', mean: 0.95 },
+      { text: 'TARE WEIGHT:773KG /1704Lbs', mean: 0.95 },
+    ]);
+
+    expect(fields['mpgmKg'].value).toBe('4300');
+    expect(fields['mpgmLb'].value).toBe('9480');
+    expect(fields['tareKg'].value).toBe('773');
+    expect(fields['tareLb'].value).toBe('1704');
+  });
+
+  it('should recognize a zero-for-O gross label and standard pounds suffix', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'MAX GR0SS WEIGHT : 4300KG/9480lbs', mean: 0.94 },
+      { text: 'TARE WEIGHT:773KG /1704Lbs', mean: 0.96 },
+    ]);
+
+    expect(fields['mpgmKg'].value).toBe('4300');
+    expect(fields['mpgmLb'].value).toBe('9480');
+    expect(fields['tareKg'].value).toBe('773');
+    expect(fields['tareLb'].value).toBe('1704');
+  });
+
+  it('should infer the opposite unit for an unreadable slash-paired weight', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string; inferred?: boolean }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'MAX GROSS WEIGHT: 4300KG/9480s', mean: 0.95 },
+      { text: 'TARE WEIGHT:773KG/1704s', mean: 0.95 },
+    ]);
+
+    expect(fields['mpgmKg'].value).toBe('4300');
+    expect(fields['mpgmLb'].value).toBe('9480');
+    expect(fields['mpgmLb'].inferred).toBe(true);
+    expect(fields['tareKg'].value).toBe('773');
+    expect(fields['tareLb'].value).toBe('1704');
+    expect(fields['tareLb'].inferred).toBe(true);
+  });
+
+  it('should preserve an explicitly readable unit on a slash-paired weight', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number }>): Record<string, { value: string; inferred?: boolean }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'MAX GROSS WEIGHT: 4300KG/9480LBS', mean: 0.95 },
+    ]);
+
+    expect(fields['mpgmKg'].value).toBe('4300');
+    expect(fields['mpgmLb'].value).toBe('9480');
+    expect(fields['mpgmLb'].inferred).toBe(false);
+  });
+
   it('should recover a checksum-valid container ID split across OCR regions', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
@@ -638,15 +1536,20 @@ describe('App', () => {
       suggestedMarkingBounds(lines: Array<{ text: string; mean: number; box?: number[][] }>, containerId: string): { left: number; top: number; right: number; bottom: number } | null;
     };
     const lines = [
+      { text: 'UNRELATED ABOVE', mean: 0.95, box: [[100, 50], [300, 50], [300, 75], [100, 75]] },
+      { text: 'ALIGNED ABOVE 1', mean: 0.95, box: [[410, 30], [570, 30], [570, 55], [410, 55]] },
+      { text: 'ALIGNED ABOVE 2', mean: 0.95, box: [[390, 65], [590, 65], [590, 90], [390, 90]] },
       { text: 'HCSU 799790', mean: 0.92, box: [[400, 100], [560, 100], [560, 125], [400, 125]] },
       { text: '9', mean: 0.88, box: [[570, 100], [580, 100], [580, 125], [570, 125]] },
       { text: 'MAX.GR. 30,480 KG', mean: 0.95, box: [[380, 150], [620, 150], [620, 175], [380, 175]] },
       { text: 'TARE 3,780 KG', mean: 0.95, box: [[380, 185], [580, 185], [580, 210], [380, 210]] },
+      { text: 'ALIGNED BELOW', mean: 0.95, box: [[420, 215], [560, 215], [560, 240], [420, 240]] },
+      { text: 'UNRELATED BELOW', mean: 0.95, box: [[700, 250], [900, 250], [900, 275], [700, 275]] },
     ];
 
     const bounds = app.suggestedMarkingBounds(lines, 'HCSU7997909');
 
-    expect(bounds).toEqual({ left: 380, top: 100, right: 620, bottom: 210 });
+    expect(bounds).toEqual({ left: 400, top: 30, right: 580, bottom: 240 });
   });
 
   it('should propose a crop from an ID stem when the check digit is missing', () => {
@@ -660,7 +1563,123 @@ describe('App', () => {
       { text: 'TARE 3,780 KG', mean: 0.95, box: [[380, 185], [580, 185], [580, 210], [380, 210]] },
     ];
 
-    expect(app.suggestedMarkingBounds(lines, '')).toEqual({ left: 380, top: 100, right: 636, bottom: 210 });
+    expect(app.suggestedMarkingBounds(lines, '')).toEqual({ left: 400, top: 100, right: 576, bottom: 210 });
+  });
+
+  it('should leave enough right margin for an automatic crop check digit', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      createSuggestedCrop(lines: Array<{ text: string; mean: number; box?: number[][] }>, containerId: string, image: Blob, sourceSize: { width: number; height: number }): Promise<{ x: number; y: number; width: number; height: number } | null>;
+    };
+    const lines = [
+      { text: 'AGZU 111135', mean: 0.95, box: [[400, 100], [580, 100], [580, 125], [400, 125]] },
+      { text: 'MAX.GR. 30,480 KG', mean: 0.95, box: [[380, 150], [620, 150], [620, 175], [380, 175]] },
+    ];
+
+    const crop = await app.createSuggestedCrop(lines, 'AGZU111135', new Blob(), { width: 1_000, height: 500 });
+
+    expect(crop).toEqual({ x: 0.352, y: 0.152, width: 0.3, height: 0.246 });
+  });
+
+  it('should keep the original right padding for UN tank automatic crops', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      createSuggestedCrop(lines: Array<{ text: string; mean: number; box?: number[][] }>, containerId: string, image: Blob, sourceSize: { width: number; height: number }): Promise<{ x: number; y: number; width: number; height: number } | null>;
+    };
+
+    const crop = await app.createSuggestedCrop([
+      { text: 'EUXU 700756 UN TANK', mean: 0.95, box: [[400, 100], [580, 100], [580, 125], [400, 125]] },
+    ], 'EUXU700756', new Blob(), { width: 1_000, height: 500 });
+
+    expect(crop).not.toBeNull();
+    expect(crop!.width).toBeLessThan(0.3);
+  });
+
+  it('should accept only a checksum-valid targeted check digit', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      fields: { (): Record<string, { value: string }>; update(updater: (fields: Record<string, { value: string }>) => Record<string, { value: string }>): void };
+      applyCheckDigitCandidate(lines: Array<{ text: string; mean: number }>, detected: Array<{ text: string; mean: number }>): void;
+    };
+
+    const stem = { text: 'HCSU 799790', mean: 0.95, box: [[100, 100], [300, 100], [300, 130], [100, 130]] };
+    app.applyCheckDigitCandidate([stem], [{ text: '9', mean: 0.98 }]);
+    expect(app.fields()['containerId'].value).toBe('HCSU7997909');
+
+    app.applyCheckDigitCandidate([stem], [{ text: '8', mean: 0.99 }]);
+    expect(app.fields()['containerId'].value).toBe('HCSU7997909');
+  });
+
+  it('should treat a complete OCR container ID as a directly detected check digit', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      fields: { (): Record<string, { value: string; inferred?: boolean }>; update(updater: (fields: Record<string, { value: string; inferred?: boolean }>) => Record<string, { value: string; inferred?: boolean }>): void };
+      applyCheckDigitCandidate(lines: Array<{ text: string; mean: number }>, detected: Array<{ text: string; mean: number }>): void;
+    };
+    const stem = { text: 'EUXU 700756', mean: 0.95, box: [[100, 100], [300, 100], [300, 130], [100, 130]] };
+
+    app.applyCheckDigitCandidate([stem], [{ text: 'EUXU 700756 9', mean: 0.98 }]);
+
+    expect(app.fields()['containerId']).toMatchObject({ value: 'EUXU7007569', inferred: false });
+  });
+
+  it('should infer the checksum when targeted OCR finds no digit', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      fields: { (): Record<string, { value: string; inferred?: boolean }>; update(updater: (fields: Record<string, { value: string; inferred?: boolean }>) => Record<string, { value: string; inferred?: boolean }>): void };
+      applyCheckDigitCandidate(lines: Array<{ text: string; mean: number }>, detected: Array<{ text: string; mean: number }>): void;
+    };
+    const stem = { text: 'EUXU 700756', mean: 0.95, box: [[100, 100], [300, 100], [300, 130], [100, 130]] };
+
+    app.applyCheckDigitCandidate([stem], []);
+
+    expect(app.fields()['containerId']).toMatchObject({ value: 'EUXU7007569', inferred: true });
+  });
+
+  it('should treat any completed OCR pass with a valid ID as sufficient', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      hasValidContainerId(results: Array<Array<{ text: string; mean: number }>>): boolean;
+    };
+
+    expect(app.hasValidContainerId([
+      [{ text: 'HCSU 799790 8', mean: 0.95 }],
+      [{ text: 'HCSU 799790 9', mean: 0.92 }],
+    ])).toBe(true);
+    expect(app.hasValidContainerId([
+      [{ text: 'HCSU 799790 8', mean: 0.95 }],
+      [{ text: 'HCSU 799790 8', mean: 0.92 }],
+    ])).toBe(false);
+  });
+
+  it('should locate the targeted region after character ten in a single OCR line', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
+      checkDigitRegion(lines: Array<{ text: string; mean: number; box?: number[][] }>, imageWidth: number, imageHeight: number): { x: number; y: number; width: number; height: number } | null;
+    };
+    app.cropRect.set({ x: 0, y: 0, width: 1, height: 1 });
+
+    const region = app.checkDigitRegion([{ text: 'HCSU 799790', mean: 0.95, box: [[100, 100], [300, 100], [300, 130], [100, 130]] }], 1000, 1000);
+
+     expect(region).toEqual({ x: 0.09, y: 0.07, width: 0.266, height: 0.09 });
+  });
+
+  it('should exclude OCR lines above and below the partial container ID', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
+      checkDigitRegion(lines: Array<{ text: string; mean: number; box?: number[][] }>, imageWidth: number, imageHeight: number): { x: number; y: number; width: number; height: number } | null;
+    };
+    app.cropRect.set({ x: 0, y: 0, width: 1, height: 1 });
+
+    const region = app.checkDigitRegion([
+      { text: '58 K2', mean: 0.9, box: [[100, 60], [180, 60], [180, 80], [100, 80]] },
+      { text: 'HCSU 799790', mean: 0.95, box: [[100, 100], [300, 100], [300, 130], [100, 130]] },
+      { text: 'RID ADR', mean: 0.9, box: [[100, 145], [220, 145], [220, 165], [100, 165]] },
+    ], 1000, 1000);
+
+     expect(region).toEqual({ x: 0.09, y: 0.07, width: 0.266, height: 0.09 });
   });
 
   it('should propose a crop from an ID stem split across OCR regions', () => {
@@ -674,7 +1693,7 @@ describe('App', () => {
       { text: 'MAX.GR. 30,480 KG', mean: 0.95, box: [[380, 150], [620, 150], [620, 175], [380, 175]] },
     ];
 
-    expect(app.suggestedMarkingBounds(lines, '')).toEqual({ left: 380, top: 100, right: 636, bottom: 175 });
+    expect(app.suggestedMarkingBounds(lines, '')).toEqual({ left: 400, top: 100, right: 576, bottom: 175 });
   });
 
   it('should not populate an ID with an invalid check digit', () => {
@@ -691,26 +1710,271 @@ describe('App', () => {
     const app = fixture.componentInstance as unknown as {
       imageSelection: number;
       cropDraft: () => { x: number; y: number; width: number; height: number };
-      automaticCropSuggested: () => boolean;
       status: () => string;
-      getOcr(): Promise<{ detect(url: string): Promise<Array<{ text: string; mean: number; box: number[][] }>> }>;
-      createCropPass(): Promise<{ url: string; offsetX: number; offsetY: number; scale: number; revokeUrl: boolean }>;
-      createSuggestedCrop(lines: Array<{ text: string; mean: number; box: number[][] }>, containerId: string, image: Blob): Promise<{ x: number; y: number; width: number; height: number } | null>;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
       prepareInitialCrop(image: Blob, selection: number): Promise<void>;
     };
     const focusedCrop = { x: 0.3, y: 0.2, width: 0.4, height: 0.35 };
+    const preview = { naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement;
     app.imageSelection = 1;
-    app.getOcr = async () => ({
-      detect: async () => [{ text: 'HCSU 799790 9', mean: 0.95, box: [[300, 100], [500, 100], [500, 130], [300, 130]] }],
-    });
-    app.createCropPass = async () => ({ url: 'blob:full-photo', offsetX: 0, offsetY: 0, scale: 1, revokeUrl: true });
-    app.createSuggestedCrop = async () => focusedCrop;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue(preview);
+    app.scanAutoCrop = vi.fn().mockResolvedValue([{ text: 'HCSU 799790 9', mean: 0.95, box: [[300, 100], [500, 100], [500, 130], [300, 130]] }]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue(focusedCrop);
 
     await app.prepareInitialCrop(new Blob(), 1);
 
     expect(app.cropDraft()).toEqual(focusedCrop);
-    expect(app.automaticCropSuggested()).toBe(true);
-    expect(app.status()).toMatch(/markings below\. \(\d+ ms\)$/);
+    expect(app.createSuggestedCrop).toHaveBeenCalledWith(expect.any(Array), 'HCSU7997909', expect.any(Blob), { width: 1920, height: 1080 });
+    expect(app.status()).toMatch(/^Container ID located \(\d+ ms\): HCSU 799790 9\n$/);
+  });
+
+  it('should display a partial container ID in the initial crop status', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      status: () => string;
+      analysisSuccessful: () => boolean;
+      fields: () => Record<string, { value: string; confidence?: number }>;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue({ naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement);
+    app.scanAutoCrop = vi.fn().mockResolvedValue([
+      { text: 'HCSU 799790', mean: 0.95, box: [[300, 100], [500, 100], [500, 130], [300, 130]] },
+    ]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue(null);
+
+    await app.prepareInitialCrop(new Blob(), 1);
+
+    expect(app.status()).toBe('Partial container ID located: HCSU 799790');
+    expect(app.analysisSuccessful()).toBe(true);
+    expect(app.fields()['containerId']).toEqual({ value: 'HCSU799790', confidence: 0.95 });
+  });
+
+  it('should target a partial ID without retrying the automatic crop', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
+      scanCropRegion: ReturnType<typeof vi.fn>;
+      runCheckDigitScan: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    const crop = { x: 0.2, y: 0.1, width: 0.5, height: 0.3 };
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue({ naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement);
+    app.scanAutoCrop = vi.fn().mockResolvedValue([
+      { text: 'HCSU 799790', mean: 0.95, box: [[300, 100], [500, 100], [500, 130], [300, 130]] },
+    ]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue(crop);
+    app.scanCropRegion = vi.fn();
+    app.runCheckDigitScan = vi.fn().mockResolvedValue(undefined);
+
+    await app.prepareInitialCrop(new Blob(['image'], { type: 'image/jpeg' }), 1);
+
+    expect(app.scanCropRegion).not.toHaveBeenCalled();
+    expect(app.runCheckDigitScan).toHaveBeenCalledWith(crop, expect.any(Array));
+  });
+
+  it('should not retry the automatic crop for a low-confidence container ID alone', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
+      scanCropRegion: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue({ naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement);
+    app.scanAutoCrop = vi.fn().mockResolvedValue([
+      { text: 'HCSU 799790 9', mean: 0.8, box: [[300, 100], [500, 100], [500, 130], [300, 130]] },
+    ]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue({ x: 0.2, y: 0.1, width: 0.5, height: 0.3 });
+    app.scanCropRegion = vi.fn();
+
+    await app.prepareInitialCrop(new Blob(['image'], { type: 'image/jpeg' }), 1);
+
+    expect(app.scanCropRegion).not.toHaveBeenCalled();
+  });
+
+  it('should report a full ID and all expected fields for images/iso-tank_frontal.jpg', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      status: () => string;
+      fields: () => Record<string, { value: string; confidence?: number }>;
+      analysisSuccessful: () => boolean;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue({ naturalWidth: 1200, naturalHeight: 1200 } as HTMLImageElement);
+    app.scanAutoCrop = vi.fn().mockResolvedValue([
+      { text: 'LASU 2100400', mean: 0.99, box: [[400, 100], [680, 100], [680, 140], [400, 140]] },
+      { text: '22K2', mean: 0.98, box: [[490, 150], [590, 150], [590, 190], [490, 190]] },
+      { text: 'MPGM 36000KG', mean: 0.97, box: [[470, 620], [680, 620], [680, 650], [470, 650]] },
+      { text: '79365LB', mean: 0.95, box: [[550, 655], [680, 655], [680, 685], [550, 685]] },
+      { text: 'TARE 3650KG', mean: 0.97, box: [[470, 690], [680, 690], [680, 720], [470, 720]] },
+      { text: '8047LB', mean: 0.95, box: [[550, 725], [680, 725], [680, 755], [550, 755]] },
+    ]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue({ x: 0.25, y: 0.05, width: 0.5, height: 0.65 });
+
+    await app.prepareInitialCrop(new Blob(), 1);
+
+    expect(app.fields()['containerId'].value).toBe('LASU2100400');
+    expect(app.fields()['isoCode'].value).toBe('22K2');
+    expect(app.fields()['mpgmKg'].value).toBe('36000');
+    expect(app.fields()['mpgmLb'].value).toBe('79365');
+    expect(app.fields()['tareKg'].value).toBe('3650');
+    expect(app.fields()['tareLb'].value).toBe('8047');
+    expect(app.fields()['payloadKg'].value).toBe('');
+    expect(app.fields()['payloadLb'].value).toBe('');
+    expect(app.status()).toMatch(/^Container ID located \(\d+ ms\): LASU 210040 0\n$/);
+    expect(app.status()).not.toContain('Partial container ID');
+    expect(app.analysisSuccessful()).toBe(true);
+  });
+
+  it('should preserve expected values and keep the suggested crop close to the ID for images/iso-tank_front-right-oblique.jpg', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      cropDraft: () => { x: number; y: number; width: number; height: number };
+      status: () => string;
+      fields: () => Record<string, { value: string; confidence?: number }>;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      scanCropRegion: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue({ naturalWidth: 1600, naturalHeight: 1200 } as HTMLImageElement);
+    const obliqueLines = [
+      { text: 'MEBU 126347 6', mean: 0.96, box: [[400, 100], [700, 100], [700, 140], [400, 140]] },
+      { text: '22K2', mean: 0.95, box: [[470, 155], [590, 155], [590, 190], [470, 190]] },
+      { text: 'MGW 34.000 KG', mean: 0.8, box: [[420, 600], [700, 600], [700, 635], [420, 635]] },
+      { text: 'TARE 3.650 KG', mean: 0.84, box: [[430, 650], [650, 650], [650, 685], [430, 685]] },
+      { text: 'PAYLOAD 30.350 KG', mean: 0.78, box: [[650, 700], [1100, 700], [1100, 735], [650, 735]] },
+      { text: 'CAPACITY 25.000 L', mean: 0.81, box: [[430, 750], [700, 750], [700, 785], [430, 785]] },
+    ];
+    app.scanAutoCrop = vi.fn().mockResolvedValue(obliqueLines);
+    app.scanCropRegion = vi.fn().mockResolvedValue(obliqueLines
+      .filter((line) => !line.text.startsWith('PAYLOAD'))
+      .map((line) => ({ ...line, mean: 0.96 })));
+
+    await app.prepareInitialCrop(new Blob(['oblique'], { type: 'image/jpeg' }), 1);
+
+    expect(app.fields()['containerId'].value).toBe('MEBU1263476');
+    expect(app.fields()['isoCode'].value).toBe('22K2');
+    expect(app.fields()['mpgmKg'].value).toBe('34.000');
+    expect(app.fields()['mpgmKg'].confidence).toBe(0.96);
+    expect(app.fields()['tareKg'].value).toBe('3.650');
+    expect(app.fields()['tareKg'].confidence).toBe(0.96);
+    expect(app.fields()['payloadKg'].value).toBe('30.350');
+    expect(app.fields()['payloadKg'].confidence).toBe(0.78);
+    expect(app.fields()['capacityLiters'].value).toBe('25.000');
+    expect(app.fields()['capacityLiters'].confidence).toBe(0.96);
+    expect(app.status()).toContain('Automatic 2x scan ran because some fields had confidence below the 85% threshold: MGW 80%, TARE 84%, PAYLOAD 78%, CAPACITY 81%.');
+    expect(app.scanCropRegion).toHaveBeenCalledWith(expect.any(Blob), expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }), 2, 4_000_000, expect.anything());
+    expect(app.cropDraft().x).toBeLessThan(0.2);
+    expect(app.cropDraft().width).toBeLessThan(0.3);
+    expect(app.cropDraft().x + app.cropDraft().width).toBeLessThan(0.5);
+  });
+
+  it('should reject a four-digit ID fragment and select a valid ID from another OCR row', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      extractFields(lines: Array<{ text: string; mean: number; box?: number[][] }>): Record<string, { value: string }>;
+    };
+
+    const fields = app.extractFields([
+      { text: 'YODU 2638', mean: 0.99, box: [[100, 100], [300, 100], [300, 130], [100, 130]] },
+      { text: '22K5', mean: 0.98, box: [[100, 145], [180, 145], [180, 170], [100, 170]] },
+      { text: 'EUXU 700756 9', mean: 0.95, box: [[500, 200], [760, 200], [760, 235], [500, 235]] },
+    ]);
+
+    expect(fields['containerId'].value).toBe('EUXU7007569');
+  });
+
+  it('should find a six-digit partial ID only on the same OCR row', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      findContainerIdAnchor(lines: Array<{ text: string; mean: number; box?: number[][] }>): string;
+    };
+
+    expect(app.findContainerIdAnchor([
+      { text: 'YODU 2638', mean: 0.99, box: [[100, 100], [300, 100], [300, 130], [100, 130]] },
+      { text: '22K5', mean: 0.98, box: [[100, 145], [180, 145], [180, 170], [100, 170]] },
+    ])).toBe('');
+    expect(app.findContainerIdAnchor([
+      { text: 'EUXU 700756', mean: 0.95, box: [[500, 200], [760, 200], [760, 235], [500, 235]] },
+    ])).toBe('EUXU700756');
+    expect(app.findContainerIdAnchor([
+      { text: 'YODU 263822', mean: 0.99, box: [[100, 100], [300, 100], [300, 130], [100, 130]] },
+      { text: 'EUXU 700756 9', mean: 0.95, box: [[500, 200], [760, 200], [760, 235], [500, 235]] },
+    ])).toBe('EUXU700756');
+    expect(app.findContainerIdAnchor([
+      { text: '58T6 RID- EUXU700756', mean: 0.95, box: [[100, 200], [500, 200], [500, 240], [100, 240]] },
+    ])).toBe('EUXU700756');
+  });
+
+  it('should narrow a merged OCR box to an embedded partial ID', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      suggestedMarkingBounds(lines: Array<{ text: string; mean: number; box?: number[][] }>, containerId: string): { left: number; top: number; right: number; bottom: number } | null;
+    };
+
+    const bounds = app.suggestedMarkingBounds([
+      { text: '58T6 RID- EUXU700756', mean: 0.95, box: [[100, 200], [500, 200], [500, 240], [100, 240]] },
+    ], '');
+
+    expect(bounds?.left).toBeGreaterThan(100);
+    expect(bounds?.right).toBeLessThan(550);
+  });
+
+  it('should reject a tall OCR box that merges two visual rows', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      findContainerIdAnchor(lines: Array<{ text: string; mean: number; box?: number[][] }>): string;
+    };
+    const lines = [
+      { text: 'YODU 263822', mean: 0.99, box: [[100, 100], [360, 100], [360, 190], [100, 190]] },
+      { text: '22K5', mean: 0.98, box: [[100, 205], [180, 205], [180, 230], [100, 230]] },
+      { text: 'EUXU 700756 9', mean: 0.95, box: [[500, 300], [760, 300], [760, 335], [500, 335]] },
+    ];
+
+    expect(app.findContainerIdAnchor(lines)).toBe('EUXU700756');
+    expect(app.findContainerIdAnchor(lines.slice(0, 2))).toBe('');
+  });
+
+  it('should retain the initial full-photo OCR result in raw detected text', async () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      imageSelection: number;
+      rawScans: () => Array<{ label: string; lines: Array<{ text: string; confidence: number }>; durationMs: number }>;
+      waitForPreviewImage: ReturnType<typeof vi.fn>;
+      scanAutoCrop: ReturnType<typeof vi.fn>;
+      createSuggestedCrop: ReturnType<typeof vi.fn>;
+      prepareInitialCrop(image: Blob, selection: number): Promise<void>;
+    };
+    app.imageSelection = 1;
+    app.waitForPreviewImage = vi.fn().mockResolvedValue({ naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement);
+    app.scanAutoCrop = vi.fn().mockResolvedValue([{ text: 'EUXU 700756 9', mean: 0.95 }]);
+    app.createSuggestedCrop = vi.fn().mockResolvedValue(null);
+
+    await app.prepareInitialCrop(new Blob(), 1);
+
+    expect(app.rawScans()[0].lines[0]).toEqual({ text: 'EUXU 700756 9', confidence: 95 });
   });
 
 });
