@@ -223,24 +223,6 @@ video {
   font: 700 0.72rem/1 Arial, sans-serif;
   padding: 6px 22px 6px 8px;
 }
-.rotation-control {
-  align-items: flex-start;
-  background: #0e1811;
-  border: 1px solid #506754;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 5px 8px;
-}
-.rotation-control > span {
-  color: #eaf0eb;
-  font: 700 0.72rem/1 Arial, sans-serif;
-}
-.rotation-control input {
-  accent-color: #95c6a0;
-  min-width: 130px;
-}
 .camera-frame {
   background: #050805;
 }
@@ -359,18 +341,18 @@ video {
 .status.busy span {
   animation: pulse 1s infinite;
 }
-.unwarped-preview {
+.scan-preview {
   background: #0d1610;
   border: 1px solid #506754;
   margin: 18px 0 0;
   padding: 10px;
 }
-.unwarped-preview img {
+.scan-preview img {
   display: block;
   height: auto;
   max-width: 100%;
 }
-.unwarped-preview figcaption {
+.scan-preview figcaption {
   color: #c6d3c8;
   font-size: 0.78rem;
   margin-top: 8px;

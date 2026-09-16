@@ -66,16 +66,6 @@ Consequences:
 
 Both passes are processed sequentially. The temporary OCR image from one pass is released before the next pass is created. Results from both passes are combined and duplicate detected text is removed.
 
-### Optional Cylindrical Unwarp
-
-For cylindrical containers, the user can enable **Unwarp** after selecting a crop. The optional rotation adjustment ranges from `-10` to `+10` degrees. The application then performs three sequential passes:
-
-1. **Original size**: the selected crop without unwarping.
-2. **Unwarped**: the selected crop transformed with the configured rotation and cylindrical curvature.
-3. **2x unwarped**: the same transformation at an enlarged scale, subject to the 4 MP and memory limits.
-
-The first pass estimates text-line geometry and supplies a bounded rotation correction when the estimate is reliable. The unwarped pass is retained as a temporary preview for diagnosis; it is not saved instead of the original photo.
-
 ## Auto Crop Mode
 
 After a photo is selected in Auto mode:

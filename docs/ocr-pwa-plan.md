@@ -2,7 +2,7 @@
 
 ## Current status
 
-The Angular 22 PWA shell is implemented. It supports camera capture, device image selection, automatic crop suggestions, manual rectangle crops with previews and saved normalized coordinates, optional cylindrical unwarping with rotation control, editable structured fields, ISO 6346 check-digit validation with targeted OCR recovery, same-row partial-ID detection, per-field confidence percentages, retained initial auto-crop OCR text, local saved records, and accessible technical diagnostics. Auto mode first scans the full photo to suggest a crop; manual mode waits for a user-selected crop. The user interface does not upload images.
+The Angular 22 PWA shell is implemented. It supports camera capture, device image selection, automatic crop suggestions, manual rectangle crops with previews and saved normalized coordinates, editable structured fields, ISO 6346 check-digit validation with targeted OCR recovery, same-row partial-ID detection, per-field confidence percentages, retained initial auto-crop OCR text, local saved records, and accessible technical diagnostics. Auto mode first scans the full photo to suggest a crop; manual mode waits for a user-selected crop. The user interface does not upload images.
 
 The current verification status is `84/84` unit tests passing and a successful production build on 2026-09-05.
 

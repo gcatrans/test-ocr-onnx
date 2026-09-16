@@ -31,8 +31,8 @@ describe('App', () => {
 
     expect(photoButtons.map((button) => button.textContent?.trim())).toEqual(['New', 'Existing']);
     expect(compiled.querySelector('.photo-actions > span')?.textContent?.trim()).toBe('Photo:');
-    expect(compiled.querySelector('.capture-controls')?.children).toHaveLength(1);
-    expect(compiled.querySelector('.select-control')).toBeNull();
+    expect(compiled.querySelector('.capture-controls')?.children).toHaveLength(2);
+    expect(compiled.querySelector<HTMLSelectElement>('.select-control select')?.value).toBe('auto-crop');
     expect(compiled.querySelector('.empty-preview button')).toBeNull();
     expect(compiled.querySelector('.source-actions')).toBeNull();
   });
@@ -336,13 +336,13 @@ describe('App', () => {
     expect(app.cropDraft()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
   });
 
-  it('should default to automatic crop mode and hide image controls before photo selection', () => {
+  it('should default to automatic crop mode before photo selection', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
       captureMode: () => string;
     };
     expect(app.captureMode()).toBe('auto-crop');
-    expect((fixture.nativeElement as HTMLElement).querySelectorAll('.select-control')).toHaveLength(0);
+    expect((fixture.nativeElement as HTMLElement).querySelectorAll('.select-control')).toHaveLength(1);
   });
 
   it('should show Photo and Crop controls after selecting an image', () => {
@@ -499,33 +499,6 @@ describe('App', () => {
     }
   });
 
-  it('should retain cylindrical unwarping state for the selected region', () => {
-    const fixture = TestBed.createComponent(App);
-    const app = fixture.componentInstance as unknown as {
-      unwarpSelectedRegion: () => boolean;
-      setUnwarpSelectedRegion(enabled: boolean): void;
-      unwarpRotation: () => number;
-      setUnwarpRotation(degrees: number): void;
-      captureMode: { set(value: string): void };
-      useImage(image: Blob, name: string): void;
-    };
-    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:photo'), revokeObjectURL: vi.fn() });
-
-    try {
-      app.captureMode.set('manual-crop');
-      app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
-      app.setUnwarpSelectedRegion(true);
-      app.setUnwarpRotation(3.5);
-      fixture.detectChanges();
-
-      expect(app.unwarpSelectedRegion()).toBe(true);
-      expect(app.unwarpRotation()).toBe(3.5);
-      expect((fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>('.rotation-control input')?.value).toBe('3.5');
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
   it('should release each manual OCR pass before creating the next one', async () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
@@ -555,8 +528,8 @@ describe('App', () => {
       expect(events.indexOf('revoke:blob:first')).toBeLessThan(events.indexOf('create:second'));
       expect(revokeObjectUrl).toHaveBeenCalledWith('blob:first');
       expect(revokeObjectUrl).toHaveBeenCalledWith('blob:second');
-      expect(app.createCropPass).toHaveBeenNthCalledWith(1, expect.anything(), expect.anything(), 1, undefined, 4_000_000, false, 0, 0);
-    expect(app.createCropPass).toHaveBeenNthCalledWith(2, expect.anything(), { x: 0.1, y: 0.1, width: 0.8, height: 0.8 }, 2, undefined, 4_000_000, false, 0, 0);
+      expect(app.createCropPass).toHaveBeenNthCalledWith(1, expect.anything(), expect.anything(), 1, undefined, 4_000_000);
+      expect(app.createCropPass).toHaveBeenNthCalledWith(2, expect.anything(), { x: 0.1, y: 0.1, width: 0.8, height: 0.8 }, 2, undefined, 4_000_000);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1010,27 +983,6 @@ describe('App', () => {
     expect(retryScale).toBeGreaterThanOrEqual(originalScale);
   });
 
-  it('should display the retained unwarped crop above selected-region raw text', () => {
-    const fixture = TestBed.createComponent(App);
-    const app = fixture.componentInstance as unknown as {
-      unwarpedCropUrl: { set(value: string | null): void };
-      unwarpSelectedRegion: { set(value: boolean): void };
-      cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
-      analysisSuccessful: { set(value: boolean): void };
-    };
-    app.cropRect.set({ x: 0.1, y: 0.2, width: 0.7, height: 0.3 });
-    app.analysisSuccessful.set(true);
-    app.unwarpSelectedRegion.set(true);
-    app.unwarpedCropUrl.set('blob:unwarped');
-    fixture.detectChanges();
-
-    const results = (fixture.nativeElement as HTMLElement).querySelector('.results')!;
-    const preview = results.querySelector<HTMLImageElement>('.unwarped-preview img');
-    expect(preview?.src).toContain('blob:unwarped');
-    expect(preview?.alt).toBe('Unwarped selected crop used for OCR');
-    expect(results.querySelector('.unwarped-preview')!.compareDocumentPosition(results.querySelector('.raw-text')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
   it('should display the targeted check-digit preview above raw text', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
@@ -1042,9 +994,9 @@ describe('App', () => {
     fixture.detectChanges();
 
     const results = (fixture.nativeElement as HTMLElement).querySelector('.results')!;
-    expect(results.querySelector<HTMLImageElement>('.unwarped-preview img')?.src).toContain('blob:check-digit');
-    expect(results.querySelector('.unwarped-preview')!.textContent).toContain('Targeted check-digit region');
-    expect(results.querySelector('.unwarped-preview')!.compareDocumentPosition(results.querySelector('.raw-text')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(results.querySelector<HTMLImageElement>('.scan-preview img')?.src).toContain('blob:check-digit');
+    expect(results.querySelector('.scan-preview')!.textContent).toContain('Targeted check-digit region');
+    expect(results.querySelector('.scan-preview')!.compareDocumentPosition(results.querySelector('.raw-text')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('should identify browser memory failures while processing OCR', () => {
