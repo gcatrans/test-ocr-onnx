@@ -994,7 +994,7 @@ export class App {
 
   private linesForCheckDigitStem(lines: OcrLine[], stem: string): OcrLine[] {
     const fragments = lines
-      .map((line, index) => ({ line, index, text: line.text.replace(/[^A-Z0-9]/gi, '').toUpperCase(), bounds: this.boxBounds(line.box) }))
+      .map((line) => ({ line, text: line.text.replace(/[^A-Z0-9]/gi, '').toUpperCase(), bounds: this.boxBounds(line.box) }))
       .filter((fragment) => fragment.text && fragment.bounds)
       .sort((first, second) => first.bounds!.top - second.bounds!.top || first.bounds!.left - second.bounds!.left);
     for (let start = 0; start < fragments.length; start++) {
@@ -1197,9 +1197,8 @@ export class App {
 
   private findContainerIdAnchor(lines: OcrLine[]): string {
     const fragments = lines
-      .map((line, index) => ({
+      .map((line) => ({
         line,
-        index,
         text: line.text.replace(/[^A-Z0-9]/gi, '').toUpperCase(),
         bounds: this.boxBounds(line.box),
       }))
@@ -1237,9 +1236,8 @@ export class App {
   private linesForContainerId(lines: OcrLine[], containerId: string): OcrLine[] {
     const normalizedId = containerId.replace(/[^A-Z0-9]/gi, '').toUpperCase();
     const fragments = lines
-      .map((line, index) => ({
+      .map((line) => ({
         line,
-        index,
         text: line.text.replace(/[^A-Z0-9]/gi, '').toUpperCase(),
         bounds: this.boxBounds(line.box),
       }))
@@ -1551,17 +1549,14 @@ export class App {
       fields.containerId = { value: validId.value, confidence: validId.line.mean };
     } else {
       const idFragments = text
-        .map((line, index) => ({
+        .map((line) => ({
           ...line,
-          index,
           fragment: line.normalized.replace(/[^A-Z0-9]/g, ''),
           bounds: this.boxBounds(line.box),
         }))
         .filter((line) => line.fragment && line.bounds)
         .sort((first, second) => first.bounds!.top - second.bounds!.top || first.bounds!.left - second.bounds!.left);
       const sameRow = (first: typeof idFragments[number], second: typeof idFragments[number]) => {
-        const firstBounds = first.bounds!;
-        const secondBounds = second.bounds!;
         return this.sameOcrRow(first, second);
       };
       for (let start = 0; start < idFragments.length && !fields.containerId.value; start++) {
