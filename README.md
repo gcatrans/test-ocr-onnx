@@ -20,9 +20,9 @@
 
 The Angular 22 PWA shell supports camera capture, device image selection, automatic crop suggestions, manual rectangle crops with previews and saved normalized coordinates, editable structured fields, ISO 6346 check-digit validation with targeted OCR recovery, same-row partial-ID detection, per-field confidence percentages, retained initial auto-crop OCR text, local saved records, and accessible technical diagnostics.
 
-Auto mode first scans the full photo to suggest a crop; manual mode waits for a user-selected crop. The user interface does not upload images.
+Auto mode first scans the full photo to suggest a crop; manual mode waits for a user-selected crop. OCR remains local, while explicitly saved records can be uploaded to the configured remote synchronization endpoint.
 
-Current verification status: `103/103` unit tests passing, a successful production build, and `16/16` Playwright E2E tests passing.
+Current verification status: `105/105` unit tests passing, a successful production build, and `16/16` Playwright E2E tests passing.
 
 ## Camera Alignment
 
@@ -169,6 +169,15 @@ One input image produces one JSON record. It includes source metadata, manual cr
 ## Local Records
 
 Saving a result writes the JSON payload, a 160-pixel JPEG thumbnail, and the original image `Blob` to the browser's IndexedDB `container-mark-reader` database. The saved-result list loads record metadata and thumbnails; the full photo is loaded only after the user selects **View photo**.
+
+New records are marked **Not saved remotely** and are uploaded in the background when connectivity is available. Uploads are oldest-first and use a multipart `POST` request containing:
+
+- `clientRecordId`: the local IndexedDB record ID.
+- `json`: the serialized OCR result.
+- `image`: the original image Blob.
+- `thumbnail`: the JPEG thumbnail.
+
+A record is marked **Saved remotely** only after a successful 2xx response. Network failures, offline state, and non-2xx responses keep the record on the device and retry with increasing delays from 10 to 60 seconds. Synchronization resumes when the browser reports that it is online. The current development endpoint is `http://localhost:8080/api/saved-results`; production deployments must replace it with a reachable HTTPS endpoint and configure CORS, authentication, validation, deduplication, and server-side storage.
 
 After OCR succeeds:
 

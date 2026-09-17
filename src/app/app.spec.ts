@@ -663,6 +663,55 @@ describe('App', () => {
     expect(savedResults.querySelector<HTMLButtonElement>('.saved-record-list button')?.disabled).toBe(false);
   });
 
+  it('should show the remote synchronization status for saved records', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance as unknown as {
+      savedRecords: { set(records: Array<{ id: string; savedAt: string; payload: unknown; thumbnailUrl: string | null; hasImage: boolean; remoteStatus: 'not-saved-remotely' | 'saved-remotely' }>): void };
+    };
+    app.savedRecords.set([{ id: 'record-1', savedAt: '2026-08-15T08:00:00.000Z', payload: {}, thumbnailUrl: null, hasImage: true, remoteStatus: 'not-saved-remotely' }]);
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('.remote-status')?.textContent).toContain('Not saved remotely');
+  });
+
+  it('should upload pending saved records oldest first', async () => {
+    const fixture = TestBed.createComponent(App);
+    type TestRecord = {
+      id: string;
+      savedAt: string;
+      payload: unknown;
+      thumbnail: Blob;
+      hasImage: boolean;
+      remoteStatus: 'not-saved-remotely' | 'saved-remotely';
+      thumbnailUrl: null;
+    };
+    const app = fixture.componentInstance as unknown as {
+      savedRecords: { set(value: TestRecord[]): void; update(updater: (records: TestRecord[]) => TestRecord[]): void };
+      loadStoredImage(id: string): Promise<Blob>;
+      markRecordSavedRemotely(id: string): Promise<void>;
+      syncSavedRecords(): Promise<void>;
+    };
+    const thumbnail = new Blob(['thumbnail'], { type: 'image/jpeg' });
+    app.savedRecords.set([
+      { id: 'newer', savedAt: '2026-08-15T11:00:00.000Z', payload: {}, thumbnail, hasImage: true, remoteStatus: 'not-saved-remotely', thumbnailUrl: null },
+      { id: 'older', savedAt: '2026-08-15T10:00:00.000Z', payload: {}, thumbnail, hasImage: true, remoteStatus: 'not-saved-remotely', thumbnailUrl: null },
+    ]);
+    app.loadStoredImage = vi.fn().mockResolvedValue(new Blob(['image'], { type: 'image/jpeg' }));
+    app.markRecordSavedRemotely = vi.fn().mockImplementation(async (id: string) => {
+      app.savedRecords.update((records) => records.map((record) => record.id === id ? { ...record, remoteStatus: 'saved-remotely' } : record));
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await app.syncSavedRecords();
+
+      expect(fetchMock.mock.calls.map(([, options]) => ((options as RequestInit).body as FormData).get('clientRecordId'))).toEqual(['older', 'newer']);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('should disable viewing a photo when only saved metadata is available', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {

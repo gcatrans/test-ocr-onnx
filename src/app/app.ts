@@ -9,7 +9,9 @@ type BoxBounds = { left: number; top: number; right: number; bottom: number };
 type CropResizeHandle = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 type DecodedImage = { source: CanvasImageSource; width: number; height: number; release: () => void };
 type RawScan = { label: string; lines: Array<{ text: string; confidence: number }>; durationMs: number; pixelCount: number };
-type StoredRecord = { id: string; savedAt: string; payload: unknown; thumbnail?: Blob; hasImage?: boolean; image?: Blob };
+type RemoteStatus = 'not-saved-remotely' | 'saved-remotely';
+type SyncWarning = 'offline' | 'remote-unavailable' | null;
+type StoredRecord = { id: string; savedAt: string; payload: unknown; thumbnail?: Blob; hasImage?: boolean; remoteStatus?: RemoteStatus; image?: Blob };
 type StoredImage = { id: string; image: Blob };
 type SavedRecord = StoredRecord & { thumbnailUrl: string | null };
 const DEFAULT_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
@@ -27,6 +29,9 @@ const CROP_MEMORY_HEADROOM = 0.25;
 const CROP_BYTES_PER_PIXEL = 16;
 const THUMBNAIL_MAX_DIMENSION = 160;
 const THUMBNAIL_JPEG_QUALITY = 0.8;
+const REMOTE_API_URL = 'http://localhost:8080/api/saved-results';
+const INITIAL_SYNC_RETRY_DELAY_MS = 10_000;
+const MAX_SYNC_RETRY_DELAY_MS = 60_000;
 
 function defaultCaptureMode(): CaptureMode {
   return 'auto-crop';
@@ -99,6 +104,8 @@ export class App {
   protected readonly savedRecords = signal<SavedRecord[]>([]);
   protected readonly savedJson = signal<string | null>(null);
   protected readonly savedPhoto = signal<{ id: string; name: string; url: string } | null>(null);
+  protected readonly syncWarning = signal<SyncWarning>(null);
+  protected readonly savedResultsWarning = computed(() => this.hasPendingRemoteSync() ? this.syncWarning() : null);
   protected readonly fields = signal<Record<FieldKey, ContainerField>>({
     maxWorkingPressureBar: { value: '', unit: 'BAR' },
     maxWorkingPressurePsi: { value: '', unit: 'PSI' },
@@ -165,6 +172,18 @@ export class App {
   private lastAutoCropPixelCount = 0;
   private lastCropPassPixelCount = 0;
   private nextDiagnosticId = 0;
+  private syncingSavedRecords = false;
+  private syncRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private syncRetryDelayMs = INITIAL_SYNC_RETRY_DELAY_MS;
+  private readonly onlineHandler = () => {
+    this.syncWarning.set(null);
+    this.cancelSyncRetry();
+    void this.syncSavedRecords();
+  };
+  private readonly offlineHandler = () => {
+    this.cancelSyncRetry();
+    if (this.hasPendingRemoteSync()) this.syncWarning.set('offline');
+  };
 
   protected openFilePicker(): void {
     this.clearFields();
@@ -553,7 +572,7 @@ export class App {
       const id = crypto.randomUUID();
       await new Promise<void>((resolve, reject) => {
         const transaction = database.transaction(['records', 'images'], 'readwrite');
-        transaction.objectStore('records').add({ id, savedAt: new Date().toISOString(), payload, thumbnail, hasImage: true });
+        transaction.objectStore('records').add({ id, savedAt: new Date().toISOString(), payload, thumbnail, hasImage: true, remoteStatus: 'not-saved-remotely' });
         transaction.objectStore('images').add({ id, image });
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
@@ -561,6 +580,7 @@ export class App {
       });
       database.close();
       await this.loadSavedRecords();
+      void this.syncSavedRecords();
       this.status.set('Result and photo saved locally in browser database.');
     } catch (error: unknown) {
       this.addDiagnostic('IndexedDB', 'JSON data could not be saved locally.', this.errorMessage(error));
@@ -660,6 +680,9 @@ export class App {
 
   protected ngOnDestroy(): void {
     this.closeCamera();
+    this.cancelSyncRetry();
+    window.removeEventListener('online', this.onlineHandler);
+    window.removeEventListener('offline', this.offlineHandler);
     this.cancelPreviewLoad(new Error('The component was destroyed.'));
     const current = this.previewUrl();
     if (current) {
@@ -672,6 +695,8 @@ export class App {
   }
 
   protected ngOnInit(): void {
+    window.addEventListener('online', this.onlineHandler);
+    window.addEventListener('offline', this.offlineHandler);
     void this.loadSavedRecords();
     const initializationError = this.ocrService.initializationError();
     if (initializationError) {
@@ -760,18 +785,169 @@ export class App {
       this.savedRecords.set(records
         .sort((first, second) => second.savedAt.localeCompare(first.savedAt))
         .map((record) => this.hydrateSavedRecord(record)));
+      if (!navigator.onLine && this.hasPendingRemoteSync()) this.syncWarning.set('offline');
+      void this.syncSavedRecords();
     } catch (error: unknown) {
       this.addDiagnostic('IndexedDB', 'Saved records could not be loaded.', this.errorMessage(error));
     }
   }
 
   private hydrateSavedRecord(record: StoredRecord): SavedRecord {
-    return { ...record, thumbnailUrl: record.thumbnail instanceof Blob ? URL.createObjectURL(record.thumbnail) : null };
+    return {
+      ...record,
+      remoteStatus: record.remoteStatus ?? 'not-saved-remotely',
+      thumbnailUrl: record.thumbnail instanceof Blob ? URL.createObjectURL(record.thumbnail) : null,
+    };
   }
 
   protected savedRecordName(record: SavedRecord): string {
     const source = (record.payload as { source?: { fileName?: unknown } }).source;
     return typeof source?.fileName === 'string' && source.fileName ? source.fileName : 'Container image';
+  }
+
+  protected remoteStatusLabel(record: SavedRecord): string {
+    return record.remoteStatus === 'saved-remotely' ? 'Saved remotely' : 'Not saved remotely';
+  }
+
+  private async syncSavedRecords(): Promise<void> {
+    if (this.syncingSavedRecords) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      this.cancelSyncRetry();
+      if (this.hasPendingRemoteSync()) this.syncWarning.set('offline');
+      return;
+    }
+    if (!this.hasPendingRemoteSync()) {
+      this.clearSyncStateWhenComplete();
+      return;
+    }
+
+    this.syncingSavedRecords = true;
+    let retryRequired = false;
+    try {
+      const pendingRecords = this.savedRecords()
+        .filter((record) => record.remoteStatus !== 'saved-remotely' && record.hasImage)
+        .sort((first, second) => first.savedAt.localeCompare(second.savedAt));
+      for (const record of pendingRecords) {
+        const image = await this.loadStoredImage(record.id);
+        if (!image) continue;
+        const thumbnail = await this.ensureThumbnail(record, image);
+        if (!thumbnail) continue;
+
+        const form = new FormData();
+        form.append('clientRecordId', record.id);
+        form.append('json', JSON.stringify(record.payload));
+        form.append('image', image, 'container-image');
+        form.append('thumbnail', thumbnail, 'thumbnail.jpg');
+        try {
+          const response = await fetch(REMOTE_API_URL, { method: 'POST', body: form });
+          if (!response.ok) {
+            retryRequired = true;
+            this.syncWarning.set('remote-unavailable');
+            break;
+          }
+          await this.markRecordSavedRemotely(record.id);
+          this.syncRetryDelayMs = INITIAL_SYNC_RETRY_DELAY_MS;
+        } catch {
+          retryRequired = true;
+          this.syncWarning.set('remote-unavailable');
+          break;
+        }
+      }
+    } finally {
+      this.syncingSavedRecords = false;
+      if (!this.hasPendingRemoteSync()) {
+        this.clearSyncStateWhenComplete();
+      } else if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        this.offlineHandler();
+      } else if (retryRequired) {
+        this.scheduleSyncRetry();
+      }
+    }
+  }
+
+  private hasPendingRemoteSync(): boolean {
+    return this.savedRecords().some((record) => record.remoteStatus !== 'saved-remotely' && record.hasImage);
+  }
+
+  private scheduleSyncRetry(): void {
+    if (this.syncRetryTimer !== null || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
+    this.syncRetryTimer = setTimeout(() => {
+      this.syncRetryTimer = null;
+      void this.syncSavedRecords();
+    }, this.syncRetryDelayMs);
+    this.syncRetryDelayMs = Math.min(this.syncRetryDelayMs * 2, MAX_SYNC_RETRY_DELAY_MS);
+  }
+
+  private cancelSyncRetry(): void {
+    if (this.syncRetryTimer === null) return;
+    clearTimeout(this.syncRetryTimer);
+    this.syncRetryTimer = null;
+  }
+
+  private clearSyncStateWhenComplete(): void {
+    if (this.hasPendingRemoteSync()) return;
+    this.cancelSyncRetry();
+    this.syncRetryDelayMs = INITIAL_SYNC_RETRY_DELAY_MS;
+    this.syncWarning.set(null);
+  }
+
+  private async loadStoredImage(id: string): Promise<Blob | null> {
+    const database = await this.openSavedRecordsDatabase();
+    try {
+      return await new Promise<Blob | null>((resolve, reject) => {
+        const request = database.transaction('images', 'readonly').objectStore('images').get(id);
+        request.onsuccess = () => resolve((request.result as StoredImage | undefined)?.image ?? null);
+        request.onerror = () => reject(request.error);
+      });
+    } finally {
+      database.close();
+    }
+  }
+
+  private async ensureThumbnail(record: SavedRecord, image: Blob): Promise<Blob | null> {
+    if (record.thumbnail instanceof Blob) return record.thumbnail;
+    try {
+      const thumbnail = await this.createThumbnail(image);
+      await this.updateStoredRecord(record.id, (stored) => ({ ...stored, thumbnail }));
+      this.savedRecords.update((records) => records.map((current) => {
+        if (current.id !== record.id) return current;
+        if (current.thumbnailUrl) URL.revokeObjectURL(current.thumbnailUrl);
+        return { ...current, thumbnail, thumbnailUrl: URL.createObjectURL(thumbnail) };
+      }));
+      return thumbnail;
+    } catch {
+      return null;
+    }
+  }
+
+  private async markRecordSavedRemotely(id: string): Promise<void> {
+    await this.updateStoredRecord(id, (record) => ({ ...record, remoteStatus: 'saved-remotely' }));
+    this.savedRecords.update((records) => records.map((record) => record.id === id ? { ...record, remoteStatus: 'saved-remotely' } : record));
+  }
+
+  private async updateStoredRecord(id: string, update: (record: StoredRecord) => StoredRecord): Promise<void> {
+    const database = await this.openSavedRecordsDatabase();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction('records', 'readwrite');
+        const store = transaction.objectStore('records');
+        const request = store.get(id);
+        request.onsuccess = () => {
+          const record = request.result as StoredRecord | undefined;
+          if (!record) {
+            reject(new Error('The saved record no longer exists.'));
+            return;
+          }
+          store.put(update(record));
+        };
+        request.onerror = () => reject(request.error);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } finally {
+      database.close();
+    }
   }
 
   private async prepareInitialCrop(image: Blob, selection: number): Promise<void> {

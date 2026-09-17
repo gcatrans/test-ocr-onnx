@@ -13,6 +13,14 @@
   margin-top: 8px;
   padding: 12px;
 }
+.sync-warning {
+  background: #3a2d18;
+  border: 1px solid #8a6b32;
+  border-radius: 8px;
+  color: #f2d89a;
+  margin: 12px 0 0;
+  padding: 8px;
+}
 .saved-results-heading {
   align-items: center;
   display: flex;
@@ -55,6 +63,14 @@
 .saved-record-list small {
   display: block;
   font-size: 0.6rem;
+}
+.remote-status {
+  color: #e2b86a;
+  display: block;
+  font-size: 0.62rem;
+}
+.remote-status.remote-saved {
+  color: #8cd29a;
 }
 .saved-json pre {
   max-height: 300px;
