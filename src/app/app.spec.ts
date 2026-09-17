@@ -504,8 +504,8 @@ describe('App', () => {
     const app = fixture.componentInstance as unknown as {
       cropRect: { set(value: { x: number; y: number; width: number; height: number } | null): void };
       createCropPass: ReturnType<typeof vi.fn>;
-      detectWithRecovery: ReturnType<typeof vi.fn>;
-      scanOcrPasses(image: Blob, recovery: { retried: boolean }): Promise<unknown>;
+      detectWithTimeout: ReturnType<typeof vi.fn>;
+      scanOcrPasses(image: Blob): Promise<unknown>;
     };
     const events: string[] = [];
     const revokeObjectUrl = vi.fn((url: string) => events.push(`revoke:${url}`));
@@ -520,10 +520,10 @@ describe('App', () => {
         events.push('create:second');
         return { url: 'blob:second', offsetX: 0, offsetY: 0, scale: 1.4, revokeUrl: true };
       });
-    app.detectWithRecovery = vi.fn().mockResolvedValue([{ text: 'TARE 3.650 KG', mean: 0.8 }]);
+    app.detectWithTimeout = vi.fn().mockResolvedValue([{ text: 'TARE 3.650 KG', mean: 0.8 }]);
 
     try {
-      await app.scanOcrPasses(new Blob(['large-image'], { type: 'image/jpeg' }), { retried: false });
+      await app.scanOcrPasses(new Blob(['large-image'], { type: 'image/jpeg' }));
 
       expect(events.indexOf('revoke:blob:first')).toBeLessThan(events.indexOf('create:second'));
       expect(revokeObjectUrl).toHaveBeenCalledWith('blob:first');
@@ -540,44 +540,38 @@ describe('App', () => {
     const app = fixture.componentInstance as unknown as {
       cropRect: { set(value: { x: number; y: number; width: number; height: number }): void };
       createCropPass: ReturnType<typeof vi.fn>;
-      detectWithRecovery: ReturnType<typeof vi.fn>;
-      scanOcrPasses(image: Blob, recovery: { retried: boolean }): Promise<unknown>;
+      detectWithTimeout: ReturnType<typeof vi.fn>;
+      scanOcrPasses(image: Blob): Promise<unknown>;
     };
     app.cropRect.set({ x: 0.1, y: 0.1, width: 0.8, height: 0.8 });
     app.createCropPass = vi.fn().mockResolvedValue({ url: 'blob:first', offsetX: 0, offsetY: 0, scale: 1, revokeUrl: false });
-    app.detectWithRecovery = vi.fn().mockResolvedValue([{ text: 'HCSU 799790 9', mean: 0.9 }]);
+    app.detectWithTimeout = vi.fn().mockResolvedValue([{ text: 'HCSU 799790 9', mean: 0.9 }]);
 
-    await app.scanOcrPasses(new Blob(['image'], { type: 'image/jpeg' }), { retried: false });
+    await app.scanOcrPasses(new Blob(['image'], { type: 'image/jpeg' }));
 
     expect(app.createCropPass).toHaveBeenCalledTimes(1);
   });
 
-  it('should retry a failed image preview with fresh object URLs', () => {
+  it('should clear a failed image preview without retrying', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
       previewUrl: () => string | null;
       diagnostics: () => Array<{ stage: string }>;
       captureMode: { set(value: string): void };
       useImage(image: Blob, name: string): void;
-      retryPreview(failedUrl: string): void;
+      previewFailed(failedUrl: string): void;
     };
-    const createObjectUrl = vi.fn()
-      .mockReturnValueOnce('blob:preview-1')
-      .mockReturnValueOnce('blob:preview-2')
-      .mockReturnValueOnce('blob:preview-3');
+    const createObjectUrl = vi.fn().mockReturnValue('blob:preview-1');
     const revokeObjectUrl = vi.fn();
     vi.stubGlobal('URL', { createObjectURL: createObjectUrl, revokeObjectURL: revokeObjectUrl });
 
     try {
       app.captureMode.set('manual-crop');
       app.useImage(new Blob(['image'], { type: 'image/jpeg' }), 'container.jpg');
-      app.retryPreview('blob:preview-1');
-      app.retryPreview('blob:preview-2');
-      app.retryPreview('blob:preview-3');
+      app.previewFailed('blob:preview-1');
 
-      expect(createObjectUrl).toHaveBeenCalledTimes(3);
+      expect(createObjectUrl).toHaveBeenCalledTimes(1);
       expect(revokeObjectUrl).toHaveBeenCalledWith('blob:preview-1');
-      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:preview-2');
       expect(app.previewUrl()).toBeNull();
       expect(app.diagnostics().some((diagnostic) => diagnostic.stage === 'Image preview')).toBe(true);
     } finally {
@@ -883,91 +877,58 @@ describe('App', () => {
     expect(app.createJsonPayload().source.manualCrop).toEqual(crop);
   });
 
-  it('should retry local OCR once after a failed detection without recreating it', async () => {
+  it('should not retry a failed OCR detection', async () => {
     const fixture = TestBed.createComponent(App);
-    const app = fixture.componentInstance as unknown as {
-      detectWithTimeout: ReturnType<typeof vi.fn>;
-      detectWithRecovery(url: string, recovery: { retried: boolean }): Promise<string[]>;
-    };
-    app.detectWithTimeout = vi.fn().mockRejectedValueOnce(new Error('stalled worker')).mockResolvedValueOnce(['container text']);
+    const app = fixture.componentInstance as unknown as { detectWithTimeout(url: string): Promise<unknown> };
+    const detect = vi.spyOn(app, 'detectWithTimeout').mockRejectedValue(new Error('stalled worker'));
 
-    await expect(app.detectWithRecovery('blob:crop', { retried: false })).resolves.toEqual(['container text']);
-
-    expect(app.detectWithTimeout).toHaveBeenCalledWith('blob:crop');
-    expect(app.detectWithTimeout).toHaveBeenCalledTimes(2);
+    await expect(app.detectWithTimeout('blob:crop')).rejects.toThrow('stalled worker');
+    expect(detect).toHaveBeenCalledTimes(1);
   });
 
-  it('should use a loaded image element when bitmap and image decode fail', async () => {
+  it('should report source decode failure without a fallback retry', async () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      decodeImage(image: Blob): Promise<{ width: number; height: number; release(): void }>;
+      decodeImage(image: Blob): Promise<unknown>;
     };
-    const createObjectUrl = vi.fn().mockReturnValue('blob:fallback-image');
-    const revokeObjectUrl = vi.fn();
-    const decode = vi.fn().mockRejectedValue(new Error('Image.decode is unsupported'));
-
-    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('WebP bitmap decoding failed')));
-    vi.stubGlobal('URL', { createObjectURL: createObjectUrl, revokeObjectURL: revokeObjectUrl });
-    vi.stubGlobal('Image', class {
-      naturalWidth = 768;
-      naturalHeight = 768;
-      onload: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      set src(_value: string) {
-        queueMicrotask(() => this.onload?.());
-      }
-      decode = decode;
-    });
+    const createImageBitmapMock = vi.fn().mockRejectedValue(new Error('ImageBitmap unavailable'));
+    vi.stubGlobal('createImageBitmap', createImageBitmapMock);
 
     try {
-      const decoded = await app.decodeImage(new Blob(['image'], { type: 'image/webp' }));
-
-      expect(decode).toHaveBeenCalled();
-      expect(decoded.width).toBe(768);
-      expect(decoded.height).toBe(768);
-      decoded.release();
-      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:fallback-image');
+      await expect(app.decodeImage(new Blob(['image'], { type: 'image/jpeg' }))).rejects.toThrow('ImageBitmap unavailable');
+      expect(createImageBitmapMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it('should retry source-image loading with a fresh object URL', async () => {
+  it('should include image and canvas context in diagnostic details', () => {
     const fixture = TestBed.createComponent(App);
     const app = fixture.componentInstance as unknown as {
-      decodeImage(image: Blob): Promise<{ width: number; height: number; release(): void }>;
+      sourceName: { set(value: string): void };
+      imageBlob: { set(value: Blob): void };
+      diagnostics: () => Array<{ code: string; technical?: string }>;
+      addDiagnostic(stage: string, message: string, technical: string, context: { sourceWidth: number; sourceHeight: number; canvasWidth: number; canvasHeight: number; pass: string }, code: string): void;
     };
-    const createObjectUrl = vi.fn().mockReturnValueOnce('blob:first-attempt').mockReturnValueOnce('blob:second-attempt');
-    const revokeObjectUrl = vi.fn();
-    let imageCount = 0;
+    app.sourceName.set('container-photo.jpg');
+    app.imageBlob.set(new Blob(['image'], { type: 'image/jpeg' }));
 
-    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('ImageBitmap unavailable')));
-    vi.stubGlobal('URL', { createObjectURL: createObjectUrl, revokeObjectURL: revokeObjectUrl });
-    vi.stubGlobal('Image', class {
-      naturalWidth = 640;
-      naturalHeight = 480;
-      onload: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      constructor() {
-        imageCount++;
-      }
-      set src(_value: string) {
-        queueMicrotask(() => imageCount === 1 ? this.onerror?.() : this.onload?.());
-      }
-      decode = vi.fn().mockResolvedValue(undefined);
-    });
+    app.addDiagnostic('ONNX OCR', 'OCR failed.', 'RangeError: Canvas allocation failed', {
+      sourceWidth: 4032,
+      sourceHeight: 3024,
+      canvasWidth: 3226,
+      canvasHeight: 1935,
+      pass: 'Original size',
+    }, 'OCR_PASS_FAILED');
 
-    try {
-      const decoded = await app.decodeImage(new Blob(['image'], { type: 'image/jpeg' }));
-
-      expect(decoded.width).toBe(640);
-      expect(createObjectUrl).toHaveBeenCalledTimes(2);
-      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:first-attempt');
-      decoded.release();
-      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:second-attempt');
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    const diagnostic = app.diagnostics()[0];
+    expect(diagnostic.code).toBe('OCR_PASS_FAILED');
+    expect(diagnostic.technical).toContain('image="container-photo.jpg"');
+    expect(diagnostic.technical).toContain('bytes=5');
+    expect(diagnostic.technical).toContain('source=4032x3024');
+    expect(diagnostic.technical).toContain('canvas=3226x1935');
+    expect(diagnostic.technical).toContain('pass=Original size');
+    expect(diagnostic.technical).toContain('RangeError: Canvas allocation failed');
   });
 
   it('should cap manual crop output dimensions by pixel budget', () => {
@@ -1837,7 +1798,7 @@ describe('App', () => {
     expect(app.fields()['capacityLiters'].value).toBe('25.000');
     expect(app.fields()['capacityLiters'].confidence).toBe(0.96);
     expect(app.status()).toContain('Automatic 2x scan ran because some fields had confidence below the 85% threshold: MGW 80%, TARE 84%, PAYLOAD 78%, CAPACITY 81%.');
-    expect(app.scanCropRegion).toHaveBeenCalledWith(expect.any(Blob), expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }), 2, 4_000_000, expect.anything());
+    expect(app.scanCropRegion).toHaveBeenCalledWith(expect.any(Blob), expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }), 2, 4_000_000);
     expect(app.cropDraft().x).toBeLessThan(0.2);
     expect(app.cropDraft().width).toBeLessThan(0.3);
     expect(app.cropDraft().x + app.cropDraft().width).toBeLessThan(0.5);

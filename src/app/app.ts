@@ -18,8 +18,7 @@ const MAX_AUTO_CROP_FALLBACK_PIXELS = 1_000_000;
 const MAX_MANUAL_CROP_PIXELS = 4_000_000;
 const MAX_MANUAL_RETRY_CROP_PIXELS = 4_000_000;
 const MAX_CHECK_DIGIT_CROP_PIXELS = 1_000_000;
-const MAX_PREVIEW_RETRIES = 2;
-const OCR_PASS_TIMEOUT_MS = 45_000;
+const OCR_PASS_TIMEOUT_MS = 180_000;
 const CROP_MEMORY_HEADROOM = 0.25;
 const CROP_BYTES_PER_PIXEL = 16;
 const THUMBNAIL_MAX_DIMENSION = 160;
@@ -37,10 +36,27 @@ interface ContainerField {
 }
 
 interface Diagnostic {
+  id: number;
+  code: string;
   stage: string;
   message: string;
   technical?: string;
+  context?: DiagnosticContext;
 }
+
+type DiagnosticContext = {
+  imageName?: string;
+  imageBytes?: number;
+  imageType?: string;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  crop?: CropRect;
+  canvasWidth?: number;
+  canvasHeight?: number;
+  pass?: string;
+  pixelCount?: number;
+  scale?: number;
+};
 
 @Component({
   selector: 'app-root',
@@ -125,10 +141,10 @@ export class App {
   private cropStart: { x: number; y: number } | null = null;
   private cropResize: { handle: CropResizeHandle; crop: CropRect } | null = null;
   private imageSelection = 0;
-  private previewRetries = 0;
   private previewLoad: { selection: number; resolve: (image: HTMLImageElement) => void; reject: (reason: Error) => void } | null = null;
   private lastAutoCropPixelCount = 0;
   private lastCropPassPixelCount = 0;
+  private nextDiagnosticId = 0;
 
   protected openFilePicker(): void {
     this.clearFields();
@@ -203,7 +219,7 @@ export class App {
   protected async applyCropAndProcess(): Promise<void> {
     const crop = this.cropDraft();
     if (crop.width < 0.02 || crop.height < 0.02) {
-      this.addDiagnostic('Manual crop', 'Draw a larger rectangle around the marking to scan.');
+      this.addDiagnostic('Manual crop', 'Draw a larger rectangle around the marking to scan.', undefined, { crop }, 'CROP_TOO_SMALL');
       return;
     }
     this.applyingCrop.set(true);
@@ -252,7 +268,7 @@ export class App {
     canvas.getContext('2d')?.drawImage(video, 0, 0);
     canvas.toBlob((blob) => {
       if (!blob) {
-        this.addDiagnostic('Camera', 'The photo could not be created from the camera preview.');
+        this.addDiagnostic('Camera', 'The photo could not be created from the camera preview.', `canvas=${canvas.width}x${canvas.height}`, {}, 'CAMERA_CAPTURE_FAILED');
         return;
       }
       this.useImage(blob, `container-${new Date().toISOString().replaceAll(':', '-')}.jpg`);
@@ -279,23 +295,12 @@ export class App {
     await this.prepareInitialCrop(image, this.imageSelection);
   }
 
-  protected retryPreview(failedUrl: string): void {
-    const image = this.imageBlob();
-    if (!image || this.previewUrl() !== failedUrl) return;
-
-    if (this.previewRetries < MAX_PREVIEW_RETRIES) {
-      this.previewRetries++;
-      const nextUrl = URL.createObjectURL(image);
-      this.previewUrl.set(nextUrl);
-      URL.revokeObjectURL(failedUrl);
-      this.status.set(`Image preview failed to load. Retrying (${this.previewRetries} of ${MAX_PREVIEW_RETRIES})...`);
-      return;
-    }
-
+  protected previewFailed(failedUrl: string): void {
+    if (this.previewUrl() !== failedUrl) return;
     this.previewUrl.set(null);
     URL.revokeObjectURL(failedUrl);
     this.cancelPreviewLoad(new Error('The selected image preview could not be loaded.'));
-    this.addDiagnostic('Image preview', 'The selected image could not be displayed. Choose the image again.');
+    this.addDiagnostic('Image preview', 'The selected image could not be displayed. Choose the image again.', undefined, {}, 'PREVIEW_LOAD_FAILED');
   }
 
   protected previewLoaded(url: string): void {
@@ -340,11 +345,10 @@ export class App {
     try {
       this.status.set('Loading local PaddleOCR models...');
       this.status.set('Detecting painted text regions...');
-      const recovery = { retried: false };
       this.rawText.set([]);
       this.rawScans.set([]);
       this.rawScansCollapsed.set(false);
-      const scanResults = await this.scanOcrPasses(image, recovery);
+      const scanResults = await this.scanOcrPasses(image);
       const lines = this.selectBestOcrLines(scanResults);
       this.selectedOcrLines.set(lines);
       const rawText = lines.map((line) => `${line.text} (${Math.round(line.mean * 100)}%)`);
@@ -373,7 +377,7 @@ export class App {
     } catch (error: unknown) {
       this.analysisSuccessful.set(false);
       this.processing.set(false);
-      this.addDiagnostic('ONNX OCR', this.ocrFailureMessage(error), this.errorMessage(error));
+      this.addDiagnostic('ONNX OCR', this.ocrFailureMessage(error), this.errorMessage(error), { pass: 'OCR' }, 'OCR_PASS_FAILED');
     }
   }
 
@@ -398,7 +402,7 @@ export class App {
       });
       database.close();
       await this.loadSavedRecords();
-      this.status.set('Result and photo saved locally in IndexedDB.');
+      this.status.set('Result and photo saved locally in browser database.');
     } catch (error: unknown) {
       this.addDiagnostic('IndexedDB', 'JSON data could not be saved locally.', this.errorMessage(error));
     }
@@ -524,7 +528,6 @@ export class App {
     }
     this.imageBlob.set(image);
     this.previewUrl.set(URL.createObjectURL(image));
-    this.previewRetries = 0;
     this.sourceName.set(name);
     this.applyingCrop.set(false);
     this.cropRect.set(null);
@@ -624,7 +627,7 @@ export class App {
       try {
         lines = await this.scanAutoCrop(preview, MAX_FULL_PHOTO_PIXELS);
       } catch (error: unknown) {
-        this.status.set('Full-photo OCR could not use its normal size. Retrying with a reduced image...');
+        this.status.set('Automatic crop failed. Retrying with reduced crop resolution...');
         try {
           lines = await this.scanAutoCrop(preview, MAX_AUTO_CROP_FALLBACK_PIXELS);
         } catch (fallbackError: unknown) {
@@ -659,7 +662,7 @@ export class App {
              const retryStartedAt = performance.now();
              automaticRetryReason = this.lowConfidenceSummary(fields);
             this.status.set(`Low confidence detected in ${automaticRetryReason}. Retrying the automatic crop at 2x to improve recognition...`);
-            const retryLines = await this.scanCropRegion(image, suggestedCrop, 2, MAX_MANUAL_RETRY_CROP_PIXELS, { retried: false });
+            const retryLines = await this.scanCropRegion(image, suggestedCrop, 2, MAX_MANUAL_RETRY_CROP_PIXELS);
             this.rawScans.update((scans) => [...scans, {
               label: '2x automatic crop',
               lines: retryLines.map((line) => ({ text: line.text, confidence: Math.round(line.mean * 100) })),
@@ -675,7 +678,12 @@ export class App {
                height: preview.naturalHeight,
              });
            } catch (error: unknown) {
-            this.addDiagnostic('Automatic crop retry', 'The enlarged automatic crop could not be scanned.', this.errorMessage(error));
+            this.addDiagnostic('Automatic crop retry', 'The enlarged automatic crop could not be scanned.', this.errorMessage(error), {
+              crop: suggestedCrop ?? undefined,
+              pass: '2x automatic crop',
+              pixelCount: MAX_MANUAL_RETRY_CROP_PIXELS,
+              scale: 2,
+            }, 'OCR_PASS_FAILED');
           }
         }
         if (partialContainerId && !this.validateContainerId(fields.containerId.value) && suggestedCrop) {
@@ -702,7 +710,7 @@ export class App {
       }
     } catch (error: unknown) {
       if (selection === this.imageSelection) {
-        this.addDiagnostic('Initial crop detection', 'The ID could not be located automatically. Draw a crop around the markings to scan.', this.errorMessage(error));
+        this.addDiagnostic('Initial crop detection', 'The ID could not be located automatically. Draw a crop around the markings to scan.', this.errorMessage(error), { pass: 'Full photo / reduced fallback' }, 'AUTO_CROP_FAILED');
       }
     } finally {
       if (selection === this.imageSelection) {
@@ -740,17 +748,6 @@ export class App {
     }
   }
 
-  private async detectWithRecovery(url: string, recovery: { retried: boolean }) {
-    try {
-      return await this.detectWithTimeout(url);
-    } catch (error: unknown) {
-      if (recovery.retried) throw error;
-      recovery.retried = true;
-      this.status.set('Local OCR stalled. Retrying local OCR once...');
-      return this.detectWithTimeout(url);
-    }
-  }
-
   private async detectWithTimeout(url: string) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -765,20 +762,56 @@ export class App {
     }
   }
 
-  private addDiagnostic(stage: string, message: string, technical?: string): void {
+  private addDiagnostic(stage: string, message: string, technical?: string, context: DiagnosticContext = {}, code = 'GENERAL'): void {
     this.status.set(message);
-    this.diagnostics.update((diagnostics) => [...diagnostics, { stage, message, technical }]);
+    const diagnosticContext = { ...this.currentDiagnosticContext(), ...context };
+    this.diagnostics.update((diagnostics) => [...diagnostics, {
+      id: ++this.nextDiagnosticId,
+      code,
+      stage,
+      message,
+      technical: this.formatDiagnosticDetails(technical, diagnosticContext),
+      context: diagnosticContext,
+    }]);
+  }
+
+  private currentDiagnosticContext(): DiagnosticContext {
+    const image = this.imageBlob();
+    const preview = this.previewImage()?.nativeElement;
+    return {
+      imageName: this.sourceName() || undefined,
+      imageBytes: image?.size,
+      imageType: image?.type || undefined,
+      sourceWidth: preview?.naturalWidth || undefined,
+      sourceHeight: preview?.naturalHeight || undefined,
+    };
+  }
+
+  private formatDiagnosticDetails(technical: string | undefined, context: DiagnosticContext): string | undefined {
+    const details = [
+      context.imageName ? `image=${JSON.stringify(context.imageName)}` : undefined,
+      context.imageBytes !== undefined ? `bytes=${context.imageBytes}` : undefined,
+      context.imageType ? `type=${context.imageType}` : undefined,
+      context.sourceWidth !== undefined && context.sourceHeight !== undefined ? `source=${context.sourceWidth}x${context.sourceHeight}` : undefined,
+      context.crop ? `crop=${context.crop.x.toFixed(3)},${context.crop.y.toFixed(3)},${context.crop.width.toFixed(3)},${context.crop.height.toFixed(3)}` : undefined,
+      context.canvasWidth !== undefined && context.canvasHeight !== undefined ? `canvas=${context.canvasWidth}x${context.canvasHeight}` : undefined,
+      context.pass ? `pass=${context.pass}` : undefined,
+      context.pixelCount !== undefined ? `pixels=${context.pixelCount}` : undefined,
+      context.scale !== undefined ? `scale=${context.scale}` : undefined,
+      technical ? `error=${technical}` : undefined,
+    ].filter((detail): detail is string => Boolean(detail));
+    return details.length ? details.join('\n') : undefined;
   }
 
   private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   }
 
-  private async scanCropRegion(image: Blob, crop: CropRect, scale: number, maximumPixels: number, recovery: { retried: boolean }): Promise<OcrLine[]> {
+  private async scanCropRegion(image: Blob, crop: CropRect, scale: number, maximumPixels: number): Promise<OcrLine[]> {
     const pass = await this.createCropPass(image, crop, scale, undefined, maximumPixels);
     this.lastCropPassPixelCount = pass.pixelCount;
     try {
-      return this.deduplicateLines((await this.detectWithRecovery(pass.url, recovery)).map((line) => ({
+      return this.deduplicateLines((await this.detectWithTimeout(pass.url)).map((line) => ({
         ...line,
         box: line.box?.map(([x, y]) => [x / pass.scale + pass.offsetX, y / pass.scale + pass.offsetY]),
       })));
@@ -795,7 +828,7 @@ export class App {
     return 'Local OCR could not process this image.';
   }
 
-  private async scanOcrPasses(image: Blob, recovery: { retried: boolean }): Promise<OcrLine[][]> {
+  private async scanOcrPasses(image: Blob): Promise<OcrLine[][]> {
     const manualCrop = this.cropRect();
     const definitions = manualCrop
       ? [
@@ -811,7 +844,7 @@ export class App {
       try {
         this.status.set(`Scanning ${definition.label}${definitions.length > 1 ? ` (${index + 1} of ${definitions.length})` : ''}...`);
         const startedAt = performance.now();
-        const detected = await this.detectWithRecovery(pass.url, recovery);
+        const detected = await this.detectWithTimeout(pass.url);
         const scan = detected.map((line) => ({
           ...line,
           box: line.box?.map(([x, y]) => [x / pass.scale + pass.offsetX, y / pass.scale + pass.offsetY]),
@@ -843,12 +876,12 @@ export class App {
     if (!image || !crop) return;
     const imageSize = this.previewImage()?.nativeElement;
     if (!imageSize?.naturalWidth || !imageSize.naturalHeight) {
-      this.addDiagnostic('Check digit OCR', 'The source image dimensions are not available yet.');
+      this.addDiagnostic('Check digit OCR', 'The source image dimensions are not available yet.', undefined, { pass: 'Check digit' }, 'SOURCE_DIMENSIONS_UNAVAILABLE');
       return;
     }
      const region = this.checkDigitRegion(lines, imageSize.naturalWidth, imageSize.naturalHeight, crop);
     if (!region) {
-      this.addDiagnostic('Check digit OCR', 'The first 10 container-ID characters could not define a check-digit region.');
+      this.addDiagnostic('Check digit OCR', 'The first 10 container-ID characters could not define a check-digit region.', undefined, { crop, pass: 'Check digit' }, 'CHECK_DIGIT_REGION_UNAVAILABLE');
       return;
     }
 
@@ -862,7 +895,7 @@ export class App {
       this.clearCheckDigitPreview();
       this.checkDigitPreviewUrl.set(pass.url);
       retainPass = true;
-       const detected = await this.detectWithRecovery(pass.url, { retried: false });
+        const detected = await this.detectWithTimeout(pass.url);
        const approvalLine = detected.find((line) => /\b[0-9A-Z]{2}\s*[A-Z]\s*[0-9]\b\s+.+$/.test(line.text));
        const approvalMatch = approvalLine?.text.match(/\b([0-9A-Z]{2})\s*([A-Z])\s*([0-9])\b/);
        if (approvalLine && approvalMatch) {
@@ -888,7 +921,7 @@ export class App {
          this.clearCheckDigitPreview();
          this.checkDigitPreviewUrl.set(pass.url);
          retainPass = true;
-         const digitDetected = await this.detectWithRecovery(pass.url, { retried: false });
+          const digitDetected = await this.detectWithTimeout(pass.url);
          const digitScan = digitDetected.map((line) => ({ text: line.text, confidence: Math.round(line.mean * 100) }));
           this.rawScans.update((scans) => [...scans, {
             label: '3x container ID check digit',
@@ -901,7 +934,7 @@ export class App {
        }
        this.status.set('Check-digit scan complete.');
     } catch (error: unknown) {
-      this.addDiagnostic('Check digit OCR', 'The targeted check-digit scan could not be completed.', this.errorMessage(error));
+      this.addDiagnostic('Check digit OCR', 'The targeted check-digit scan could not be completed.', this.errorMessage(error), { crop, pass: '2x / 3x check digit' }, 'OCR_PASS_FAILED');
     } finally {
       if (pass?.revokeUrl && !retainPass) URL.revokeObjectURL(pass.url);
       this.processing.set(false);
@@ -1025,9 +1058,9 @@ export class App {
       canvas.height = Math.max(1, Math.round(sourceHeight * scale));
       try {
         const context = canvas.getContext('2d');
-        if (!context) throw new Error('Canvas 2D context is unavailable.');
+        if (!context) throw new Error(`Canvas 2D context is unavailable (canvas=${canvas.width}x${canvas.height}).`);
         context.drawImage(decodedImage.source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
-        const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('Check-digit crop could not be created.')), 'image/png'));
+        const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error(`Check-digit crop could not be created (canvas=${canvas.width}x${canvas.height}).`)), 'image/png'));
         return { url: URL.createObjectURL(blob), revokeUrl: true, pixelCount: canvas.width * canvas.height };
       } finally {
         canvas.width = 0;
@@ -1289,11 +1322,11 @@ export class App {
       canvas.width = Math.max(1, Math.round(decodedImage.width * scale));
       canvas.height = Math.max(1, Math.round(decodedImage.height * scale));
       const context = canvas.getContext('2d');
-      if (!context) throw new Error('Canvas 2D context is unavailable.');
+      if (!context) throw new Error(`Canvas 2D context is unavailable (canvas=${canvas.width}x${canvas.height}).`);
       context.drawImage(decodedImage.source, 0, 0, canvas.width, canvas.height);
       return await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => {
         if (result) resolve(result);
-        else reject(new Error('Thumbnail could not be created.'));
+        else reject(new Error(`Thumbnail could not be created (canvas=${canvas.width}x${canvas.height}).`));
       }, 'image/jpeg', THUMBNAIL_JPEG_QUALITY));
     } finally {
       canvas.width = 0;
@@ -1315,11 +1348,11 @@ export class App {
       canvas.width = baseWidth;
       canvas.height = baseHeight;
       const context = canvas.getContext('2d');
-      if (!context) throw new Error('Canvas 2D context is unavailable.');
+      if (!context) throw new Error(`Canvas 2D context is unavailable (canvas=${canvas.width}x${canvas.height}).`);
       context.drawImage(source, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, baseWidth, baseHeight);
       const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => {
         if (result) resolve(result);
-        else reject(new Error('Manual crop could not be created.'));
+        else reject(new Error(`Manual crop could not be created (canvas=${canvas.width}x${canvas.height}).`));
       }, 'image/png'));
       return { url: URL.createObjectURL(blob), offsetX: sourceX, offsetY: sourceY, scale: outputScale, revokeUrl: true, pixelCount: baseWidth * baseHeight };
     } finally {
@@ -1387,52 +1420,12 @@ export class App {
   }
 
   private async decodeImage(image: Blob): Promise<DecodedImage> {
-    let bitmapError: unknown;
     try {
       const bitmap = await createImageBitmap(image);
       return { source: bitmap, width: bitmap.width, height: bitmap.height, release: () => bitmap.close() };
     } catch (error: unknown) {
-      bitmapError = error;
+      throw new Error(`Unable to decode the source image (type=${image.type || 'unknown'}, size=${Math.round(image.size / 1024)}KiB, ImageBitmap=${this.errorMessage(error)}).`);
     }
-    let imageError: unknown;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const url = URL.createObjectURL(image);
-      const element = new Image();
-      try {
-        const loaded = new Promise<void>((resolve, reject) => {
-          element.onload = () => resolve();
-          element.onerror = () => reject(new Error('The browser image element reported a load failure.'));
-        });
-        element.src = url;
-        await loaded;
-        // Some mobile browsers display an image successfully but reject decode().
-        // A load event with dimensions is sufficient for Canvas rendering.
-        try {
-          await element.decode();
-        } catch {
-          // Use the successfully loaded image element as the Canvas source.
-        }
-        if (!element.naturalWidth || !element.naturalHeight) {
-          throw new Error('The source image has no decodable dimensions.');
-        }
-        return {
-          source: element,
-          width: element.naturalWidth,
-          height: element.naturalHeight,
-          release: () => URL.revokeObjectURL(url),
-        };
-      } catch (error: unknown) {
-        URL.revokeObjectURL(url);
-        imageError = error;
-      }
-    }
-    const details = [
-      `type=${image.type || 'unknown'}`,
-      `size=${Math.round(image.size / 1024)}KiB`,
-      `ImageBitmap=${this.errorMessage(bitmapError)}`,
-      `HTMLImage=${this.errorMessage(imageError)}`,
-    ].join(', ');
-    throw new Error(`Unable to decode the source image (${details}).`);
   }
 
   private deduplicateLines(lines: OcrLine[]): OcrLine[] {
