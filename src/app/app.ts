@@ -19,6 +19,10 @@ const MAX_MANUAL_CROP_PIXELS = 4_000_000;
 const MAX_MANUAL_RETRY_CROP_PIXELS = 4_000_000;
 const MAX_CHECK_DIGIT_CROP_PIXELS = 1_000_000;
 const OCR_PASS_TIMEOUT_MS = 180_000;
+const CAMERA_ALIGNMENT_WARNING_DEGREES = 3;
+const CAMERA_ALIGNMENT_SAMPLE_MS = 150;
+const CAMERA_ROTATION_MIN_DEGREES = 0.5;
+const CAMERA_ROTATION_MAX_DEGREES = 10;
 const CROP_MEMORY_HEADROOM = 0.25;
 const CROP_BYTES_PER_PIXEL = 16;
 const THUMBNAIL_MAX_DIMENSION = 160;
@@ -71,12 +75,19 @@ export class App {
   protected readonly previewUrl = signal<string | null>(null);
   protected readonly checkDigitPreviewUrl = signal<string | null>(null);
   protected readonly imageBlob = signal<Blob | null>(null);
+  private readonly originalImageBlob = signal<Blob | null>(null);
   protected readonly cropRect = signal<CropRect | null>(null);
   protected readonly cropDraft = signal<CropRect>(DEFAULT_CROP);
   protected readonly applyingCrop = signal(false);
   protected readonly cropResizeHandles: CropResizeHandle[] = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
   protected readonly captureMode = signal<CaptureMode>(defaultCaptureMode());
   protected readonly cameraOpen = signal(false);
+  protected readonly cameraAlignmentAngle = signal<number | null>(null);
+  protected readonly cameraAlignmentStatus = computed(() => {
+    const angle = this.cameraAlignmentAngle();
+    if (angle === null) return 'unknown';
+    return Math.abs(angle) <= CAMERA_ALIGNMENT_WARNING_DEGREES ? 'aligned' : 'tilted';
+  });
   protected readonly processing = signal(false);
   protected readonly analysisSuccessful = signal(false);
   protected readonly status = signal('Choose a container image to begin.');
@@ -136,6 +147,15 @@ export class App {
   });
 
   private stream: MediaStream | null = null;
+  private cameraAlignmentTimer: ReturnType<typeof setInterval> | null = null;
+  private cameraOrientationAngle: number | null = null;
+  private readonly orientationHandler = (event: DeviceOrientationEvent) => {
+    const roll = this.cameraRollFromOrientation(event);
+    if (roll !== null) {
+      this.cameraOrientationAngle = roll;
+      if (this.cameraAlignmentAngle() === null) this.cameraAlignmentAngle.set(this.roundAngle(roll));
+    }
+  };
   private readonly injector = inject(Injector);
   private readonly ocrService = inject(OcrService);
   private cropStart: { x: number; y: number } | null = null;
@@ -233,11 +253,14 @@ export class App {
 
   protected async openCamera(): Promise<void> {
     this.clearFields();
+    this.cameraAlignmentAngle.set(null);
+    this.cameraOrientationAngle = null;
     if (!navigator.mediaDevices?.getUserMedia) {
       this.addDiagnostic('Camera', 'This browser does not provide camera access.', 'navigator.mediaDevices.getUserMedia is unavailable.');
       return;
     }
     try {
+      await this.requestCameraOrientationPermission();
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: false,
@@ -249,6 +272,7 @@ export class App {
         if (video && this.stream === stream) {
           video.srcObject = stream;
           void video.play();
+          this.startCameraAlignmentMonitoring();
         }
       }, { injector: this.injector });
     } catch (error: unknown) {
@@ -262,24 +286,159 @@ export class App {
       this.addDiagnostic('Camera', 'The camera is not ready yet. Wait for the preview, then capture again.');
       return;
     }
+    if (this.cameraAlignmentStatus() === 'tilted') {
+      this.addDiagnostic('Camera alignment', `The camera appears tilted by about ${Math.abs(this.cameraAlignmentAngle() ?? 0)}°. You can capture anyway, but horizontal lines may be split by OCR.`);
+    }
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext('2d')?.drawImage(video, 0, 0);
-    canvas.toBlob((blob) => {
+    canvas.toBlob(async (blob) => {
       if (!blob) {
         this.addDiagnostic('Camera', 'The photo could not be created from the camera preview.', `canvas=${canvas.width}x${canvas.height}`, {}, 'CAMERA_CAPTURE_FAILED');
         return;
       }
-      this.useImage(blob, `container-${new Date().toISOString().replaceAll(':', '-')}.jpg`);
+      const angle = this.cameraAlignmentAngle();
+      const correction = angle !== null && Math.abs(angle) >= CAMERA_ROTATION_MIN_DEGREES && Math.abs(angle) <= CAMERA_ROTATION_MAX_DEGREES ? -angle : 0;
+      if (angle !== null && Math.abs(angle) > CAMERA_ROTATION_MAX_DEGREES) {
+        this.addDiagnostic('Camera alignment', `The image is tilted by about ${Math.abs(angle)}°. Automatic rotation is limited to ${CAMERA_ROTATION_MAX_DEGREES}°; review the crop before scanning.`);
+      }
+      try {
+        const workingImage = correction === 0 ? blob : await this.rotateCameraImage(canvas, correction);
+        this.useImage(workingImage, `container-${new Date().toISOString().replaceAll(':', '-')}.jpg`, blob);
+        if (correction !== 0) this.status.set(`Camera tilt automatically corrected by ${Math.abs(correction)}° for OCR. Review the crop before scanning.`);
+      } catch (error: unknown) {
+        this.addDiagnostic('Camera alignment', 'The captured image could not be rotation-corrected. The original image is still available for OCR.', this.errorMessage(error));
+        this.useImage(blob, `container-${new Date().toISOString().replaceAll(':', '-')}.jpg`, blob);
+      }
       this.closeCamera();
     }, 'image/jpeg', 0.92);
   }
 
+  private async rotateCameraImage(source: HTMLCanvasElement, angle: number): Promise<Blob> {
+    const radians = angle * Math.PI / 180;
+    const sine = Math.abs(Math.sin(radians));
+    const cosine = Math.abs(Math.cos(radians));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(source.width * cosine + source.height * sine);
+    canvas.height = Math.ceil(source.width * sine + source.height * cosine);
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('The rotation canvas could not be created.');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.translate(canvas.width / 2, canvas.height / 2);
+    context.rotate(radians);
+    context.drawImage(source, -source.width / 2, -source.height / 2);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    canvas.width = 0;
+    canvas.height = 0;
+    if (!blob) throw new Error('The rotation image could not be encoded.');
+    return blob;
+  }
+
   protected closeCamera(): void {
+    this.stopCameraAlignmentMonitoring();
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
     this.cameraOpen.set(false);
+    this.cameraAlignmentAngle.set(null);
+    this.cameraOrientationAngle = null;
+  }
+
+  private startCameraAlignmentMonitoring(): void {
+    this.stopCameraAlignmentMonitoring();
+    if (typeof window === 'undefined') return;
+    window.addEventListener('deviceorientation', this.orientationHandler);
+    this.cameraAlignmentTimer = setInterval(() => this.updateCameraAlignment(), CAMERA_ALIGNMENT_SAMPLE_MS);
+  }
+
+  private stopCameraAlignmentMonitoring(): void {
+    if (this.cameraAlignmentTimer !== null) {
+      clearInterval(this.cameraAlignmentTimer);
+      this.cameraAlignmentTimer = null;
+    }
+    if (typeof window !== 'undefined') window.removeEventListener('deviceorientation', this.orientationHandler);
+  }
+
+  private async requestCameraOrientationPermission(): Promise<void> {
+    if (typeof DeviceOrientationEvent === 'undefined') return;
+    const orientation = DeviceOrientationEvent as typeof DeviceOrientationEvent & { requestPermission?: () => Promise<'granted' | 'denied'> };
+    if (!orientation.requestPermission) return;
+    try {
+      await orientation.requestPermission();
+    } catch {
+      // Camera capture remains available when motion permission is unavailable.
+    }
+  }
+
+  private cameraRollFromOrientation(event: DeviceOrientationEvent, orientationAngle = this.screenOrientationAngle()): number | null {
+    const beta = typeof event.beta === 'number' && Number.isFinite(event.beta) ? event.beta : null;
+    const gamma = typeof event.gamma === 'number' && Number.isFinite(event.gamma) ? event.gamma : null;
+    switch (orientationAngle) {
+      case 90: return beta;
+      case 180: return gamma === null ? null : -gamma;
+      case 270: return beta === null ? null : -beta;
+      default: return gamma;
+    }
+  }
+
+  private screenOrientationAngle(): number {
+    if (typeof screen === 'undefined' || !screen.orientation) return 0;
+    return ((screen.orientation.angle % 360) + 360) % 360;
+  }
+
+  private updateCameraAlignment(): void {
+    const video = this.videoPreview()?.nativeElement;
+    const visualAngle = video ? this.measurePreviewRoll(video) : null;
+    const nextAngle = visualAngle ?? this.cameraOrientationAngle;
+    if (nextAngle === null) return;
+    const previous = this.cameraAlignmentAngle();
+    const smoothed = previous === null ? nextAngle : previous * 0.7 + nextAngle * 0.3;
+    this.cameraAlignmentAngle.set(this.roundAngle(smoothed));
+  }
+
+  private measurePreviewRoll(video: HTMLVideoElement): number | null {
+    if (video.videoWidth < 32 || video.videoHeight < 32) return null;
+    const canvas = document.createElement('canvas');
+    const width = 240;
+    const height = Math.max(32, Math.round((video.videoHeight / video.videoWidth) * width));
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    context.drawImage(video, 0, 0, width, height);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    let cosine = 0;
+    let sine = 0;
+    let edges = 0;
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const index = (y * width + x) * 4;
+        const left = this.previewLuma(pixels, index - 4);
+        const right = this.previewLuma(pixels, index + 4);
+        const top = this.previewLuma(pixels, index - width * 4);
+        const bottom = this.previewLuma(pixels, index + width * 4);
+        const horizontalGradient = right - left;
+        const verticalGradient = bottom - top;
+        const magnitude = Math.hypot(horizontalGradient, verticalGradient);
+        if (magnitude < 35 || Math.abs(verticalGradient) < Math.abs(horizontalGradient) * 1.15) continue;
+        const weight = magnitude * magnitude;
+        cosine += weight * (horizontalGradient * horizontalGradient - verticalGradient * verticalGradient);
+        sine += weight * 2 * horizontalGradient * verticalGradient;
+        edges++;
+      }
+    }
+    if (edges < 30 || Math.hypot(cosine, sine) === 0) return null;
+    const angle = (Math.atan2(sine, cosine) / 2) * (180 / Math.PI);
+    return Math.abs(angle) <= 45 ? angle : angle - Math.sign(angle) * 90;
+  }
+
+  private previewLuma(pixels: Uint8ClampedArray, index: number): number {
+    return pixels[index] * 0.299 + pixels[index + 1] * 0.587 + pixels[index + 2] * 0.114;
+  }
+
+  private roundAngle(angle: number): number {
+    return Math.round(angle * 10) / 10;
   }
 
   protected async setCaptureMode(mode: CaptureMode): Promise<void> {
@@ -382,7 +541,7 @@ export class App {
   }
 
   protected async saveJsonToIndexedDb(): Promise<void> {
-    const image = this.imageBlob();
+    const image = this.originalImageBlob() ?? this.imageBlob();
     if (!image) {
       this.addDiagnostic('IndexedDB', 'Choose or capture an image before saving a record.');
       return;
@@ -520,13 +679,14 @@ export class App {
     }
   }
 
-  private useImage(image: Blob, name: string): void {
+  private useImage(image: Blob, name: string, originalImage = image): void {
     this.cancelPreviewLoad(new Error('A different image was selected.'));
     const current = this.previewUrl();
     if (current) {
       URL.revokeObjectURL(current);
     }
     this.imageBlob.set(image);
+    this.originalImageBlob.set(originalImage);
     this.previewUrl.set(URL.createObjectURL(image));
     this.sourceName.set(name);
     this.applyingCrop.set(false);
